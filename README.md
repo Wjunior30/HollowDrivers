@@ -50,3 +50,16 @@ Arte própria inspirada em fantasia medieval sombria; sem vínculo com Dark Soul
 - Código separado em lógica de drivers (`DriverLogic.ps1`), telas (`Views.ps1`), operações (`Operations.ps1`), histórico (`History.ps1`) e clonagem. Distribua o instalador completo, não somente o script principal.
 
 Testes adicionais: `tests/reliability.ps1` simula falha de atualização, interrupção na troca de pastas, bloqueio de manutenção, respostas simultâneas, erros de tarefas, preservação de backups e transições do clone. Usa somente pastas de teste em `dist`, sem alterar drivers ou discos. `tests/single-instance.ps1` valida abertura simultânea e reabertura.
+## Componentes para jogos (1.6.0)
+
+Em **Proteção → Componentes para jogos**, selecione Visual C++ v14 x86, Visual C++ v14 x64 ou DirectX legado (junho de 2010). O aplicativo consulta as versões registradas do Visual C++ e algumas bibliotecas de referência do DirectX; essa consulta não certifica a integridade de todos os componentes nem identifica automaticamente as exigências de cada jogo.
+
+Após confirmação e autorização do Windows, o aplicativo baixa o instalador oficial para uma pasta temporária protegida em Program Files, valida a assinatura da Microsoft e instala ou repara o componente selecionado. Para Visual C++, uma versão mais nova é mantida, uma versão igual é reparada e uma versão antiga é atualizada. Pacotes Visual C++ anteriores à família v14 permanecem intactos. O pacote x86 pode ser necessário mesmo em Windows x64. Em ARM64, o pacote x64 oficial também contém binários ARM64; o fluxo DirectX legado não é oferecido.
+
+O DirectX legado acrescenta bibliotecas usadas por jogos antigos e não troca a versão do DirectX do Windows. Seus componentes não oferecem desinstalação individual; instale conforme a necessidade do jogo. Há confirmação específica antes do download de aproximadamente 96 MB.
+
+Falhas e resultados entram no histórico existente. O retorno de reinício necessário é mostrado sem reiniciar o computador automaticamente. Nada é instalado ao abrir a tela ou ao verificar os componentes. .NET, PhysX, OpenAL e famílias antigas de Visual C++ não estão incluídos nesta primeira versão.
+
+Fontes oficiais: [Visual C++](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist), [DirectX legado](https://www.microsoft.com/en-us/download/details.aspx?id=8109).
+
+Teste: `tests/game-components.ps1`, com Windows PowerShell em STA. Verifica catálogo, detecção, rejeição de assinaturas não confiáveis, decisões conforme versão, códigos de saída, tamanho do comando administrativo e navegação da janela. Não instala componentes no sistema.

@@ -46,7 +46,7 @@ namespace DG
                 Extract("SimpleClone.ps1", stage);
                 Extract("clone-offline.sh", stage);
 
-                foreach (string module in new string[] { "DriverLogic.ps1", "Views.ps1", "Operations.ps1", "History.ps1" }) Extract(module, stage);
+                foreach (string module in new string[] { "DriverLogic.ps1", "Views.ps1", "Operations.ps1", "History.ps1", "GameComponents.ps1" }) Extract(module, stage);
                 InstallTransaction.Replace(stage, target, null);
 
                 Shortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "HollowDrivers.lnk"), exe, target);

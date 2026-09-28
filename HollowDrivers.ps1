@@ -1,6 +1,6 @@
 ﻿param([switch]$SelfTest, [switch]$Watch, [switch]$Rescue, [switch]$AutoRescue, [switch]$HoldWU)
 
-$AppVersion = '1.5.0'
+$AppVersion = '1.6.0'
 $UpdateRepo = 'Wjunior30/DriverGuard'   # onde as versões novas são publicadas (GitHub Releases)
 # Chave pública das versões. Uma atualização só é aceita se vier assinada pela chave privada correspondente,
 # que fica fora do GitHub (%USERPROFILE%\.HollowDrivers). Assim, quem invadir a conta do GitHub não consegue publicar malware.
@@ -1005,6 +1005,8 @@ $FooterText.Text = "HollowDrivers $AppVersion  •  nada é instalado sem você 
 
 # ---------------------------------------------------------------- diálogos
 
+. (Join-Path $Here 'GameComponents.ps1')
+$Win.FindName('BtnGames').add_Click({ Show-GameComponents })
 . (Join-Path $Here 'CloneAssistant.ps1')
 $Win.FindName('BtnClone').add_Click({ Show-CloneAssistant })
 $Win.FindName('BtnHistory').add_Click({ Show-OperationHistory })

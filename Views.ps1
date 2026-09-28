@@ -414,7 +414,7 @@
           <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
           <Button x:Name="BtnWatch" Style="{StaticResource PillAccent}" Content="Vigia automático"/>
           <Button x:Name="BtnRescue" Content="Socorro automático"/>
-          <Button x:Name="BtnClone" Content="Preparar clone do Windows"/><Button x:Name="BtnHistory" Content="Histórico"/><Button x:Name="BtnDiagnostics" Content="Exportar diagnóstico"/>
+          <Button x:Name="BtnGames" Content="Componentes para jogos"/><Button x:Name="BtnClone" Content="Preparar clone do Windows"/><Button x:Name="BtnHistory" Content="Histórico"/><Button x:Name="BtnDiagnostics" Content="Exportar diagnóstico"/>
           <Button x:Name="BtnDb" Style="{StaticResource PillBad}" Content="Remover Driver Booster" Visibility="Collapsed"/>
         </WrapPanel>
       </Grid>
