@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Management;
 using System.Reflection;
@@ -20,6 +21,7 @@ namespace DG
         [STAThread]
         static int Main(string[] args)
         {
+            Application.EnableVisualStyles();
             bool silent = Array.Exists(args, a => a.Equals("/silent", StringComparison.OrdinalIgnoreCase));
             string target = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Programs\HollowDrivers");
             string exe = Path.Combine(target, "HollowDrivers.exe");
@@ -29,13 +31,23 @@ namespace DG
             if (!silent && !Confirm(installed, target)) return 0;
 
             bool watch = false;
+            FileStream maintenance = null;
             try
             {
-                KillRunning();
-                Directory.CreateDirectory(target);
-                Extract("HollowDrivers.ps1", target);
-                Extract("HollowDrivers.exe", target);
-                Extract("HollowDrivers.ico", target);
+                maintenance = Maintenance.Acquire(target);
+                InstallTransaction.Recover(target);
+                string stage = target + ".stage-" + Guid.NewGuid().ToString("N");
+                Directory.CreateDirectory(stage);
+                Extract("HollowDrivers.ps1", stage);
+                Extract("HollowDrivers.exe", stage);
+                Extract("HollowDrivers.ico", stage);
+                Extract("HollowDrivers-logo.png", stage);
+                Extract("CloneAssistant.ps1", stage);
+                Extract("SimpleClone.ps1", stage);
+                Extract("clone-offline.sh", stage);
+
+                foreach (string module in new string[] { "DriverLogic.ps1", "Views.ps1", "Operations.ps1", "History.ps1" }) Extract(module, stage);
+                InstallTransaction.Replace(stage, target, null);
 
                 Shortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "HollowDrivers.lnk"), exe, target);
                 Shortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "HollowDrivers.lnk"), exe, target);
@@ -74,6 +86,8 @@ namespace DG
                 MessageBox.Show("Erro na instalação:\n\n" + ex.Message, Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
+            finally { if (maintenance != null) maintenance.Dispose(); }
+
 
             if (watch) Process.Start(exe, "-Watch");
             if (silent)
@@ -92,7 +106,6 @@ namespace DG
         static bool Confirm(string installed, string target)
         {
             string msg;
-            MessageBoxIcon icon = MessageBoxIcon.Question;
             int cmp = installed == null ? 1 : Compare(Ver.V, installed);
             if (installed == null)
                 msg = "Instalar o HollowDrivers " + Ver.V + " neste PC?\n\n" +
@@ -109,9 +122,40 @@ namespace DG
             {
                 msg = "Você já tem uma versão MAIS NOVA instalada (" + installed + ").\n\n" +
                       "Instalar a versão " + Ver.V + " por cima vai voltar para uma versão mais antiga. Continuar?";
-                icon = MessageBoxIcon.Warning;
             }
-            return MessageBox.Show(msg, Title, MessageBoxButtons.YesNo, icon) == DialogResult.Yes;
+            using (Form form = new Form())
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("HollowDrivers-logo.png"))
+            using (Image logo = Image.FromStream(stream))
+            {
+                form.Text = Title;
+                form.ClientSize = new Size(700, 430);
+                form.AutoScaleMode = AutoScaleMode.Dpi;
+                form.StartPosition = FormStartPosition.CenterScreen;
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MaximizeBox = false;
+                form.MinimizeBox = false;
+                form.BackColor = Color.FromArgb(19, 20, 23);
+                form.ForeColor = Color.FromArgb(231, 225, 211);
+                form.Font = new Font("Segoe UI", 10);
+                form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                PictureBox art = new PictureBox { Image = logo, SizeMode = PictureBoxSizeMode.Zoom,
+                    Location = new Point(25, 55), Size = new Size(230, 290) };
+                Label heading = new Label { Text = "HOLLOWDRIVERS", AutoSize = false,
+                    Location = new Point(280, 38), Size = new Size(400, 42),
+                    Font = new Font("Georgia", 23), ForeColor = Color.FromArgb(221, 166, 87) };
+                Label version = new Label { Text = "INSTALADOR  /  " + Ver.V, AutoSize = true,
+                    Location = new Point(284, 87), ForeColor = Color.FromArgb(165, 160, 150) };
+                Label body = new Label { Text = msg, Location = new Point(284, 130), Size = new Size(390, 215) };
+                Button install = new Button { Text = installed == null ? "Instalar" : "Continuar",
+                    DialogResult = DialogResult.OK, Location = new Point(520, 370), Size = new Size(150, 38),
+                    BackColor = Color.FromArgb(221, 166, 87), ForeColor = Color.FromArgb(19, 20, 23), FlatStyle = FlatStyle.Flat };
+                Button cancel = new Button { Text = "Cancelar", DialogResult = DialogResult.Cancel,
+                    Location = new Point(360, 370), Size = new Size(145, 38), FlatStyle = FlatStyle.Flat };
+                form.Controls.AddRange(new Control[] { art, heading, version, body, install, cancel });
+                form.AcceptButton = install;
+                form.CancelButton = cancel;
+                return form.ShowDialog() == DialogResult.OK;
+            }
         }
 
         static void TryDelete(string path)
@@ -150,6 +194,7 @@ namespace DG
                     using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(name))
                     using (FileStream f = File.Create(Path.Combine(dir, name)))
                     {
+                        if (s == null || s.Length == 0) throw new IOException("Recurso ausente: " + name);
                         s.CopyTo(f);
                     }
                     return;
@@ -187,29 +232,5 @@ namespace DG
             return n;
         }
 
-        static void KillRunning()
-        {
-            try
-            {
-                using (var s = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='powershell.exe'"))
-                {
-                    foreach (ManagementObject o in s.Get())
-                    {
-                        object cl = o["CommandLine"];
-                        if (cl != null && (cl.ToString().IndexOf("HollowDrivers.ps1", StringComparison.OrdinalIgnoreCase) >= 0 || cl.ToString().IndexOf("DriverGuard.ps1", StringComparison.OrdinalIgnoreCase) >= 0))
-                        {
-                            try
-                            {
-                                Process p = Process.GetProcessById(Convert.ToInt32(o["ProcessId"]));
-                                p.Kill();
-                                p.WaitForExit(5000);   // espera o processo sair de verdade e soltar os arquivos
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
     }
 }

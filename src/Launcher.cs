@@ -13,6 +13,12 @@ using Microsoft.Win32;
 
 namespace DG
 {
+    public static class ShellIdentity
+    {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
+    }
+
     // Usado pela interface (HollowDrivers.ps1) para a barra de título escura, sem compilar nada ao abrir.
     public static class Dwm
     {
@@ -58,7 +64,10 @@ namespace DG
                 "Apagar também o backup do driver de vídeo e as configurações?\n\nEscolha \"Não\" para manter o backup caso reinstale depois.",
                 "HollowDrivers", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
 
-            KillRunning();
+            FileStream maintenance;
+            try { maintenance = Maintenance.Acquire(dir); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "HollowDrivers"); return 1; }
+            using (maintenance) {
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
             {
                 if (k != null) k.DeleteValue("HollowDrivers", false);
@@ -70,19 +79,34 @@ namespace DG
             string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string installDir = Path.Combine(local, @"Programs\HollowDrivers");
             string dataDir = Path.Combine(local, "HollowDrivers");
-            string cmd = "/c ping 127.0.0.1 -n 3 >nul";
-            // só apaga a pasta se for a pasta de instalação oficial (nunca a pasta de desenvolvimento)
-            if (string.Equals(dir.TrimEnd('\\'), installDir, StringComparison.OrdinalIgnoreCase))
-                cmd += " & rmdir /s /q \"" + installDir + "\"";
-            if (wipe) cmd += " & rmdir /s /q \"" + dataDir + "\"";
-
-            var psi = new ProcessStartInfo("cmd.exe", cmd);
+            bool official = string.Equals(Path.GetFullPath(dir).TrimEnd('\\'), installDir, StringComparison.OrdinalIgnoreCase);
+            if (official) File.WriteAllText(Path.Combine(installDir, ".uninstall-pending"), "pending");
+            string script = @"$ErrorActionPreference='Stop'
+$install=Join-Path $env:LOCALAPPDATA 'Programs\HollowDrivers'
+$data=Join-Path $env:LOCALAPPDATA 'HollowDrivers'
+Wait-Process -Id __PID__ -ErrorAction SilentlyContinue
+$lease=[IO.File]::Open((Join-Path $data 'session.lock'),'OpenOrCreate','ReadWrite','None')
+try {
+ if (__REMOVE__) {
+  if ((Get-Item -LiteralPath $install -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {throw 'Pasta redirecionada'}
+  Remove-Item -LiteralPath $install -Recurse -Force
+ }
+} finally {$lease.Dispose()}
+if (__WIPE__) {
+ if ((Get-Item -LiteralPath $data -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {throw 'Pasta redirecionada'}
+ Remove-Item -LiteralPath $data -Recurse -Force
+}
+";
+            script = script.Replace("__PID__", Process.GetCurrentProcess().Id.ToString())
+                .Replace("__REMOVE__", official ? "$true" : "$false").Replace("__WIPE__", wipe ? "$true" : "$false");
+            var psi = new ProcessStartInfo("powershell.exe", "-NoProfile -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)));
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;
             psi.WorkingDirectory = Path.GetTempPath();
             Process.Start(psi);
-            MessageBox.Show("HollowDrivers removido.", "HollowDrivers", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("Atalhos removidos. A limpeza dos arquivos ocorrerá ao fechar esta mensagem.", "HollowDrivers", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 0;
+            }
         }
 
         static void TryDelete(string f)
@@ -90,23 +114,5 @@ namespace DG
             try { if (File.Exists(f)) File.Delete(f); } catch { }
         }
 
-        public static void KillRunning()
-        {
-            try
-            {
-                using (var s = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='powershell.exe'"))
-                {
-                    foreach (ManagementObject o in s.Get())
-                    {
-                        object cl = o["CommandLine"];
-                        if (cl != null && cl.ToString().IndexOf("HollowDrivers.ps1", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            try { Process.GetProcessById(Convert.ToInt32(o["ProcessId"])).Kill(); } catch { }
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
     }
 }

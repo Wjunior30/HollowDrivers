@@ -1,6 +1,6 @@
 ﻿param([switch]$SelfTest, [switch]$Watch, [switch]$Rescue, [switch]$AutoRescue, [switch]$HoldWU)
 
-$AppVersion = '1.3.7'
+$AppVersion = '1.5.0'
 $UpdateRepo = 'Wjunior30/DriverGuard'   # onde as versões novas são publicadas (GitHub Releases)
 # Chave pública das versões. Uma atualização só é aceita se vier assinada pela chave privada correspondente,
 # que fica fora do GitHub (%USERPROFILE%\.HollowDrivers). Assim, quem invadir a conta do GitHub não consegue publicar malware.
@@ -9,6 +9,12 @@ $Here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvoca
 $DataDir = Join-Path $env:LOCALAPPDATA 'HollowDrivers'
 $LegacyDir = Join-Path $env:LOCALAPPDATA 'DriverGuard'   # nome antigo do app: leva backup e configurações junto
 if ((Test-Path $LegacyDir) -and -not (Test-Path $DataDir)) { try { Move-Item $LegacyDir $DataDir -Force -ErrorAction Stop } catch { } }
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+try { $sessionLease=[IO.File]::Open((Join-Path $DataDir 'session.lock'),'OpenOrCreate','ReadWrite','ReadWrite') }
+catch { Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show('Instalação ou manutenção em andamento. Tente novamente ao terminar.','HollowDrivers'); return }
+try {
+if (Test-Path -LiteralPath (Join-Path $Here '.uninstall-pending')) { return }
+. (Join-Path $Here 'History.ps1')
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 # Mantem os backups feitos pelas versoes DriverGuard durante a troca de nome.
 Get-ChildItem $DataDir -Recurse -File -Filter 'driverguard-backup.json' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -38,414 +44,7 @@ function Start-Launcher([string]$arg) {
 }
 
 # ================================================================ coleta (também roda em segundo plano)
-$Logic = {
-    $CatMap = @{
-        DISPLAY = 'Vídeo'; NET = 'Rede'; MEDIA = 'Áudio'; AUDIOENDPOINT = 'Áudio'; SYSTEM = 'Sistema / Chipset'
-        USB = 'USB'; HDC = 'Armazenamento'; SCSIADAPTER = 'Armazenamento'; BLUETOOTH = 'Bluetooth'
-        HIDCLASS = 'Entrada'; MOUSE = 'Entrada'; KEYBOARD = 'Entrada'; MONITOR = 'Monitor'
-        PRINTER = 'Impressora'; CAMERA = 'Câmera'; IMAGE = 'Câmera'; SECURITYDEVICES = 'Segurança'
-        SOFTWARECOMPONENT = 'Componente de software'; EXTENSION = 'Extensões do fabricante'; FIRMWARE = 'Firmware'
-        BIOMETRIC = 'Biometria'; SMARTCARDREADER = 'Leitor de cartão'; SDHOST = 'Leitor de cartão'; SENSOR = 'Sensores'
-        BATTERY = 'Bateria / energia'; PORTS = 'Portas'; PROCESSOR = 'Processador'
-    }
-    $ProblemText = @{
-        1 = 'Mal configurado (código 1)'; 10 = 'Não iniciou (código 10)'; 14 = 'Precisa reiniciar (código 14)'
-        22 = 'DESABILITADO (código 22)'
-        28 = 'SEM DRIVER (código 28)'; 31 = 'Falha ao carregar (código 31)'; 43 = 'FALHOU (código 43)'
-    }
-    function Get-ProblemText([int]$code) {
-        if ($code -eq 0) { return 'OK' }
-        if ($ProblemText.ContainsKey($code)) { return $ProblemText[$code] }
-        "Erro (código $code)"
-    }
-
-    function Get-WuState {
-        $ux = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'
-        $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
-        $au = "$pol\AU"
-        $get = { param($p, $n) try { (Get-ItemProperty -Path $p -Name $n -ErrorAction Stop).$n } catch { $null } }
-        $ate = $null
-        $exp = & $get $ux 'PauseUpdatesExpiryTime'
-        if ($exp) { try { $ate = ([datetime]$exp).ToLocalTime() } catch { } }
-        $pontos = $null; $ultimo = $null
-        try {
-            $rp = @(Get-CimInstance -Namespace root/default -ClassName SystemRestore -ErrorAction Stop)
-            $pontos = $rp.Count
-            if ($pontos) { $ultimo = ($rp | Sort-Object CreationTime -Descending | Select-Object -First 1).CreationTime }
-        } catch { }
-        [pscustomobject]@{
-            PausadoAte = $ate
-            Pausado    = [bool]($ate -and $ate -gt (Get-Date))
-            SemAuto    = ((& $get $au 'NoAutoUpdate') -eq 1)
-            SemDriver  = ((& $get $pol 'ExcludeWUDriversInQualityUpdate') -eq 1)
-            SrLigada   = -not ((& $get 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' 'DisableSR') -eq 1)
-            Pontos     = $pontos
-            UltimoPonto = $(if ($ultimo) { try { [Management.ManagementDateTimeConverter]::ToDateTime($ultimo) } catch { $null } } else { $null })
-        }
-    }
-
-    function Get-DriverScan {
-        $problems = @{}
-        Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode <> 0' -ErrorAction SilentlyContinue |
-            Where-Object { $_.ConfigManagerErrorCode -ne 45 } |
-            ForEach-Object { $problems[$_.PNPDeviceID] = $_ }
-        $now = Get-Date
-        $seen = @{}
-        $list = @(foreach ($d in Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue) {
-            if (-not $d.DeviceName -or -not $d.DriverVersion) { continue }
-            $seen[$d.DeviceID] = $true
-            $cls = "$($d.DeviceClass)".ToUpper()
-            $age = if ($d.DriverDate) { [math]::Round(($now - $d.DriverDate).TotalDays / 365.25, 1) } else { $null }
-            if ($problems.ContainsKey($d.DeviceID)) { $status = Get-ProblemText $problems[$d.DeviceID].ConfigManagerErrorCode }
-            elseif ($null -ne $age -and $age -ge 4 -and "$($d.DriverProviderName)" -notmatch '^Microsoft') { $status = 'Antigo' }
-            else { $status = 'OK' }
-            [pscustomobject]@{
-                Status      = $status
-                Categoria   = $(if ($CatMap.ContainsKey($cls)) { $CatMap[$cls] } else { 'Outros' })
-                Dispositivo = $d.DeviceName
-                Fabricante  = "$($d.DriverProviderName)"
-                Versao      = $d.DriverVersion
-                Data        = $d.DriverDate
-                Idade       = $age
-                INF         = "$($d.InfName)"
-                Microsoft   = ("$($d.DriverProviderName)" -match '^Microsoft')
-            }
-        })
-        foreach ($p in $problems.Values) {
-            if ($seen.ContainsKey($p.PNPDeviceID)) { continue }
-            $list += [pscustomobject]@{
-                Status      = Get-ProblemText $p.ConfigManagerErrorCode
-                Categoria   = 'Sem driver'
-                Dispositivo = $(if ($p.Name) { $p.Name } else { $p.PNPDeviceID })
-                Fabricante  = "$($p.Manufacturer)"; Versao = ''; Data = $null; Idade = $null; INF = ''; Microsoft = $false
-            }
-        }
-        $list
-    }
-
-    # Notebook com duas placas: prefere a dedicada (NVIDIA, depois AMD) em vez da integrada.
-    function Get-GpuInfo {
-        $vc = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-            Where-Object { $_.PNPDeviceID -like 'PCI\*' } |
-            Sort-Object @{ e = { if ($_.PNPDeviceID -match 'VEN_10DE') { 0 } elseif ($_.PNPDeviceID -match 'VEN_1002') { 1 } else { 2 } } },
-                        @{ e = { [int64]$_.AdapterRAM }; Descending = $true } |
-            Select-Object -First 1
-        if (-not $vc) { return $null }
-        $venDev = if ($vc.PNPDeviceID -match '(VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4})') { $matches[1] } else { '' }
-        $vendor = switch -regex ($venDev) {
-            '^VEN_1002' { 'AMD'; break }
-            '^VEN_10DE' { 'NVIDIA'; break }
-            '^VEN_8086' { 'Intel'; break }
-            default { "$($vc.AdapterCompatibility)" }
-        }
-        [pscustomobject]@{
-            Name = $vc.Name; Version = $vc.DriverVersion; Inf = $vc.InfFilename
-            Code = [int]$vc.ConfigManagerErrorCode; VenDev = $venDev; Vendor = $vendor; Pnp = "$($vc.PNPDeviceID)"
-        }
-    }
-
-    # drivers principais: os que fazem o PC funcionar (vídeo, rede, áudio, chipset, armazenamento, bluetooth)
-    $KeyClasses = @{ DISPLAY = 'Vídeo'; NET = 'Rede'; MEDIA = 'Áudio'; SYSTEM = 'Chipset'; HDC = 'Armazenamento'; SCSIADAPTER = 'Armazenamento'; BLUETOOTH = 'Bluetooth' }
-    function Get-KeyDrivers {
-        # dispositivos diferentes que usam o MESMO driver (ex.: duas pontes AMD PCI) viram uma entrada só
-        $porDriver = @{}
-        foreach ($k in Get-KeyDriversRaw) {
-            $key = '{0}|{1}|{2}' -f $k.Inf, $k.Versao, $k.Nome
-            if ($porDriver.ContainsKey($key)) { $porDriver[$key].Qtd++ ; continue }
-            $k | Add-Member -NotePropertyName Qtd -NotePropertyValue 1 -Force
-            $porDriver[$key] = $k
-        }
-        @($porDriver.Values)
-    }
-
-    function Get-KeyDriversRaw {
-        $seen = @{}
-        foreach ($d in Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue) {
-            $cls = "$($d.DeviceClass)".ToUpper()
-            if (-not $KeyClasses.ContainsKey($cls) -or -not $d.DriverVersion) { continue }
-            if ($d.DeviceID -notmatch '^(PCI|USB)\\' -or "$($d.DriverProviderName)" -match '^Microsoft') { continue }
-            if ($seen.ContainsKey($d.DeviceID)) { continue }
-            $seen[$d.DeviceID] = $true
-            [pscustomobject]@{
-                Id = $d.DeviceID; Nome = $d.DeviceName; Categoria = $KeyClasses[$cls]; Classe = $cls
-                ClassGuid = "$($d.ClassGuid)"; Versao = $d.DriverVersion; Data = $d.DriverDate
-                Inf = "$($d.InfName)"; Fabricante = "$($d.DriverProviderName)"
-                VenDev = $(if ($d.DeviceID -match '((VEN_|VID_)[0-9A-F]{4}&(DEV_|PID_)[0-9A-F]{4})') { $matches[1] } else { '' })
-            }
-        }
-    }
-
-    function Get-SystemInfo {
-        $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
-        $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-        $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
-        $ram = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
-        # driver de chipset: o mais recente da classe Sistema feito pelo fabricante do processador
-        $chip = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
-            Where-Object { "$($_.DeviceClass)".ToUpper() -eq 'SYSTEM' -and "$($_.DriverProviderName)" -notmatch '^Microsoft' -and $_.DriverDate } |
-            Sort-Object DriverDate -Descending | Select-Object -First 1
-        $cv = if ("$($cpu.Manufacturer)" -match 'AMD') { 'AMD' } elseif ("$($cpu.Manufacturer)" -match 'Intel') { 'Intel' } else { "$($cpu.Manufacturer)" }
-        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-        $enc = Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue | Select-Object -First 1
-        $laptop = [bool](@($enc.ChassisTypes) | Where-Object { $_ -in 8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32 }) -or
-                  [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
-        [pscustomobject]@{
-            BoardMaker = "$($bb.Manufacturer)".Trim(); BoardModel = "$($bb.Product)".Trim()
-            Maker = "$($cs.Manufacturer)".Trim(); Model = "$($cs.Model)".Trim(); IsLaptop = $laptop
-            Cpu = "$($cpu.Name)".Trim(); CpuVendor = $cv; Cores = [int]$cpu.NumberOfCores; Threads = [int]$cpu.NumberOfLogicalProcessors
-            BiosVer = "$($bios.SMBIOSBIOSVersion)".Trim(); BiosDate = $bios.ReleaseDate
-            ChipsetName = "$($chip.DeviceName)"; ChipsetVer = "$($chip.DriverVersion)"; ChipsetDate = $chip.DriverDate; ChipsetMaker = "$($chip.DriverProviderName)"
-            RamGB = [math]::Round((($ram | Measure-Object Capacity -Sum).Sum) / 1GB); RamSpeed = [int]($ram | Select-Object -First 1).ConfiguredClockSpeed; RamSlots = $ram.Count
-        }
-    }
-
-    # Acha a pasta do pacote do driver dentro do DriverStore do Windows (leitura, sem admin).
-    function Get-DriverPackage([string]$oemInf, [string]$version) {
-        $inf = Join-Path $env:windir "INF\$oemInf"
-        if (-not $oemInf -or -not (Test-Path $inf)) { return $null }
-        $repo = Join-Path $env:windir 'System32\DriverStore\FileRepository'
-        $cat = Select-String -Path $inf -Pattern '^\s*CatalogFile\S*\s*=\s*(\S+)' | Select-Object -First 1
-        if ($cat) {
-            $base = [IO.Path]::GetFileNameWithoutExtension($cat.Matches[0].Groups[1].Value)
-            foreach ($d in Get-ChildItem $repo -Directory -Filter "$base.inf_*" -ErrorAction SilentlyContinue) {
-                $f = Get-ChildItem $d.FullName -Filter '*.inf' -File | Select-Object -First 1
-                if ($f -and (Select-String -Path $f.FullName -Pattern ('DriverVer\s*=.*' + [regex]::Escape($version)) -Quiet)) {
-                    return [pscustomobject]@{ Folder = $d.FullName; Inf = $f.Name }
-                }
-            }
-        }
-        $len = (Get-Item $inf).Length; $hash = (Get-FileHash $inf).Hash
-        foreach ($d in Get-ChildItem $repo -Directory -ErrorAction SilentlyContinue) {
-            foreach ($f in Get-ChildItem $d.FullName -Filter '*.inf' -File -ErrorAction SilentlyContinue) {
-                if ($f.Length -eq $len -and (Get-FileHash $f.FullName).Hash -eq $hash) { return [pscustomobject]@{ Folder = $d.FullName; Inf = $f.Name } }
-            }
-        }
-        $null
-    }
-
-    # Todos os pacotes de driver de terceiros instalados (inclui extensões do fabricante), só a versão mais nova de cada.
-    function Get-OemPackages {
-        $byName = @{}
-        foreach ($f in Get-ChildItem (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -File -ErrorAction SilentlyContinue) {
-            $ver = Select-String -Path $f.FullName -Pattern '^\s*DriverVer\s*=\s*[^,]*,\s*([\d\.]+)' | Select-Object -First 1
-            if (-not $ver) { continue }
-            $v = $ver.Matches[0].Groups[1].Value
-            $cls = Select-String -Path $f.FullName -Pattern '^\s*Class\s*=\s*(\w+)' | Select-Object -First 1
-            $pkg = Get-DriverPackage $f.Name $v
-            if (-not $pkg) { continue }
-            $vv = try { [version]$v } catch { [version]'0.0' }
-            $key = $pkg.Inf.ToLower()
-            if (-not $byName.ContainsKey($key) -or $byName[$key].V -lt $vv) {
-                $byName[$key] = [pscustomobject]@{
-                    Oem = $f.Name; Inf = $pkg.Inf; Folder = $pkg.Folder; Version = $v; V = $vv
-                    Class = $(if ($cls) { $cls.Matches[0].Groups[1].Value.ToUpper() } else { 'OUTROS' })
-                }
-            }
-        }
-        @($byName.Values)
-    }
-
-    # ---- versão nova do próprio HollowDrivers (GitHub Releases)
-    function Get-AppUpdate([string]$repo, [string]$current) {
-        $ProgressPreference = 'SilentlyContinue'
-        [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
-        $r = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'HollowDrivers' } -TimeoutSec 20
-        $v = $null; try { $v = [version](("$($r.tag_name)") -replace '^[vV]', '') } catch { }
-        if (-not $v -or $v -le [version]$current) { return }
-        $exe = @($r.assets | Where-Object { $_.name -eq 'HollowDrivers-Setup.exe' })[0]
-        $sig = @($r.assets | Where-Object { $_.name -eq 'HollowDrivers-Setup.exe.sig' })[0]
-        if (-not $exe -or -not $sig) { return }   # versão sem assinatura não é oferecida
-        # os links precisam ser exatamente os do GitHub deste repositório
-        $ok = '^https://github\.com/' + [regex]::Escape($repo) + '/releases/download/v[\d\.]+/HollowDrivers-Setup\.exe(\.sig)?$'
-        if ($exe.browser_download_url -notmatch $ok -or $sig.browser_download_url -notmatch $ok) { return }
-        [pscustomobject]@{ Version = "$v"; Url = $exe.browser_download_url; SigUrl = $sig.browser_download_url; Notes = "$($r.body)".Trim(); SizeMB = [math]::Round($exe.size / 1MB, 1) }
-    }
-
-    # ---- atualizações pelo Catálogo oficial do Microsoft Update (drivers certificados pela Microsoft)
-    function Get-CatalogHwId([string]$id) {
-        if ($id -match '^(PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4})') { return $matches[1] }
-        if ($id -match '^((USB|HID)\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') { return $matches[1] }
-        if ($id -match '^(HID\\VEN_[A-Z0-9]+&DEV_[0-9A-F]{4})') { return $matches[1] }
-        if ($id -match '^(ACPI\\[A-Z0-9]{4,8})\\') { return $matches[1] }
-        $null
-    }
-
-    function Search-Catalog([string]$q) {
-        $r = Invoke-WebRequest -UseBasicParsing -Uri ('https://www.catalog.update.microsoft.com/Search.aspx?q=' + [uri]::EscapeDataString($q)) -TimeoutSec 60
-        foreach ($m in [regex]::Matches($r.Content, '<tr id="([0-9a-f\-]{36})_R\d+"[\s\S]*?</tr>')) {
-            $c = @([regex]::Matches($m.Value, '<td[^>]*>([\s\S]*?)</td>') | ForEach-Object { ($_.Groups[1].Value -replace '<[^>]+>', ' ' -replace '\s+', ' ').Trim() })
-            if ($c.Count -lt 7) { continue }
-            [pscustomobject]@{ Id = $m.Groups[1].Value; Title = $c[1]; Products = $c[2]; Class = $c[3]; Date = $c[4]; Version = $c[5]; Size = ([regex]::Match($c[6], '[\d\.,]+ [KMG]B')).Value }
-        }
-    }
-
-    # Para cada dispositivo com driver de fabricante (ou sem driver), procura versão MAIS NOVA no catálogo.
-    # Vídeo e firmware ficam de fora de propósito.
-    function Get-DriverUpdates {
-        $ProgressPreference = 'SilentlyContinue'
-        [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
-        $os = if ([Environment]::OSVersion.Version.Build -ge 22000) { 'Windows 11' } else { 'Windows 10' }
-        $cands = @{}
-        foreach ($d in Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue) {
-            if (-not $d.DeviceID -or "$($d.DeviceClass)".ToUpper() -in 'DISPLAY', 'FIRMWARE') { continue }
-            if ("$($d.DriverProviderName)" -match '^Microsoft' -or -not $d.DriverVersion) { continue }
-            $hw = Get-CatalogHwId $d.DeviceID
-            if (-not $hw -or $cands.ContainsKey($hw)) { continue }
-            $cands[$hw] = [pscustomobject]@{ Hw = $hw; Name = $d.DeviceName; Class = "$($d.DeviceClass)".ToUpper(); Version = $d.DriverVersion; Date = $d.DriverDate }
-        }
-        foreach ($p in Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode = 28' -ErrorAction SilentlyContinue) {
-            $hw = Get-CatalogHwId $p.PNPDeviceID
-            if (-not $hw -or $cands.ContainsKey($hw)) { continue }
-            $cands[$hw] = [pscustomobject]@{ Hw = $hw; Name = $(if ($p.Name) { $p.Name } else { $hw }); Class = "$($p.PNPClass)".ToUpper(); Version = ''; Date = $null }
-        }
-        $i = 0; $n = $cands.Count
-        foreach ($c in $cands.Values) {
-            $i++
-            if ($Prog) { $Prog.Text = "Verificando $i de ${n}: $($c.Name)" }
-            $rows = @()
-            try { $rows = @(Search-Catalog $c.Hw) } catch { continue }
-            $cur = $null; try { $cur = [version]$c.Version } catch { }
-            $best = $null; $bestV = $null
-            foreach ($r in $rows) {
-                if ($r.Products -notmatch [regex]::Escape($os) -or $r.Class -match 'Firmware') { continue }
-                $v = $null; try { $v = [version]$r.Version } catch { }
-                if (-not $v -or ($cur -and $v -le $cur)) { continue }
-                $pub = $null; try { $pub = [datetime]::ParseExact($r.Date, 'M/d/yyyy', [Globalization.CultureInfo]::InvariantCulture) } catch { }
-                if ($c.Date -and $pub -and $pub -le $c.Date) { continue }
-                if (-not $bestV -or $v -gt $bestV) { $best = $r; $bestV = $v }
-            }
-            if ($best) {
-                [pscustomobject]@{
-                    Id = $best.Id; Dispositivo = $c.Name; Classe = $c.Class
-                    Atual = $(if ($c.Version) { $c.Version } else { 'sem driver' })
-                    Nova = $best.Version; Data = $best.Date; Tamanho = $best.Size; Titulo = $best.Title; Hw = $c.Hw
-                }
-            }
-        }
-    }
-
-    function Find-DriverBooster {
-        $found = @()
-        foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-                          'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
-                          'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall') {
-            foreach ($k in Get-ChildItem $root -ErrorAction SilentlyContinue) {
-                $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
-                if ("$($p.DisplayName)" -match 'Driver Booster') {
-                    $found += [pscustomobject]@{ Path = "$($p.InstallLocation)".TrimEnd('\'); Uninstall = "$($p.UninstallString)" }
-                }
-            }
-        }
-        foreach ($d in 'C:\Program Files\Driver Booster', 'C:\Program Files (x86)\IObit\Driver Booster') {
-            if ((Test-Path $d) -and -not ($found | Where-Object { $_.Path -eq $d })) { $found += [pscustomobject]@{ Path = $d; Uninstall = '' } }
-        }
-        @($found)
-    }
-
-    function Get-SourceName([string]$cmd, [string]$header) {
-        if ($cmd -match 'Driver ?Booster|DpInst') { return 'Driver Booster ⚠' }
-        if ($cmd -match 'AMDSoftwareInstaller|AtiSetup|AMDInstallManager') { return 'Instalador oficial AMD' }
-        if ($cmd -match 'nvidia') { return 'Instalador oficial NVIDIA' }
-        if ($cmd -match '\\Intel\\|igxpin|Installer\.exe.*Intel') { return 'Instalador oficial Intel' }
-        if ($header -match 'Hardware initiated') { return 'Windows (detecção automática)' }
-        if ($cmd -match 'pnputil') { return 'pnputil (manual / HollowDrivers)' }
-        if ($cmd -match 'svchost|wuauclt|TiWorker|MoUsoCoreWorker|drvinst') { return 'Windows / Windows Update' }
-        if ($cmd) {
-            $exe = if ($cmd -match '^"([^"]+)"') { $matches[1] } else { ($cmd -split '\s+')[0] }
-            return [IO.Path]::GetFileName($exe)
-        }
-        'Desconhecido'
-    }
-
-    # Lê o log de instalação do Windows e devolve quem instalou driver na placa de vídeo.
-    function Get-InstallHistory([string]$venDev) {
-        if (-not $venDev) { return @() }
-        $files = Get-ChildItem (Join-Path $env:windir 'INF') -Filter 'setupapi.dev*.log' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime
-        $found = New-Object Collections.Generic.List[object]
-        foreach ($f in $files) {
-            try { $sr = New-Object IO.StreamReader([IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')) } catch { continue }
-            $cur = $null
-            while ($null -ne ($line = $sr.ReadLine())) {
-                if ($line.StartsWith('>>>  [')) {
-                    if ($cur -and $cur.Match -and $cur.Start) { $found.Add($cur) }
-                    $h = $line.Substring(6).TrimEnd(']')
-                    $cur = if ($h -like 'Device Install*') { [pscustomobject]@{ Header = $h; Start = $null; Cmd = ''; Match = ($h -like "*$venDev*") } } else { $null }
-                    continue
-                }
-                if (-not $cur) { continue }
-                if (-not $cur.Start -and $line -match 'Section start (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d)') {
-                    $cur.Start = [datetime]::ParseExact($matches[1], 'yyyy/MM/dd HH:mm:ss', $null)
-                    continue
-                }
-                if (-not $cur.Cmd -and $line -match '^\s+cmd:\s+(.+)$') {
-                    $cur.Cmd = $matches[1]
-                    if ($cur.Cmd -like "*$venDev*" -or $cur.Cmd -match 'AMDSoftwareInstaller|AtiSetup|AMDInstallManager') { $cur.Match = $true }
-                }
-            }
-            if ($cur -and $cur.Match -and $cur.Start) { $found.Add($cur) }
-            $sr.Close()
-        }
-        $seen = @{}
-        $found | Sort-Object Start -Descending | ForEach-Object {
-            $src = Get-SourceName $_.Cmd $_.Header
-            $key = $_.Start.ToString('yyyyMMddHHmm') + $src
-            if (-not $seen.ContainsKey($key)) {
-                $seen[$key] = $true
-                [pscustomobject]@{ Quando = $_.Start; Origem = $src; Detalhe = $_.Header }
-            }
-        }
-    }
-
-    function Get-Health {
-        $since = (Get-Date).AddDays(-30)
-        $kp = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $since } -ErrorAction SilentlyContinue)
-        $tdr = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 4101; StartTime = $since } -ErrorAction SilentlyContinue)
-        [pscustomobject]@{
-            Crashes       = $kp.Count
-            LastCrash     = $(if ($kp.Count) { $kp[0].TimeCreated } else { $null })
-            Tdr           = $tdr.Count
-            DriverBooster = @(Find-DriverBooster)
-        }
-    }
-
-    # A hora que o Windows REGISTRA a queda é a do boot seguinte. A hora real vem da mensagem do evento 6008.
-    function Get-CrashList([int]$days = 90) {
-        $since = (Get-Date).AddDays(-$days)
-        $log = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $since; Id = 41, 42, 107, 1, 6008 } -ErrorAction SilentlyContinue |
-            Where-Object { $_.ProviderName -match 'Kernel-Power|Power-Troubleshooter|EventLog' })
-        $sh = @($log | Where-Object { $_.Id -eq 6008 })
-        $sleeps = @($log | Where-Object { $_.Id -eq 42 })
-        $wakes = @($log | Where-Object { $_.Id -in 107, 1 })
-        foreach ($e in @($log | Where-Object { $_.Id -eq 41 })) {
-            $h = @{}
-            ([xml]$e.ToXml()).Event.EventData.Data | ForEach-Object { $h[$_.Name] = $_.'#text' }
-            $bc = [int64]("0$($h['BugcheckCode'])"); $btn = [int64]("0$($h['PowerButtonTimestamp'])"); $sl = [int]("0$($h['SleepInProgress'])")
-            $tipo = if ($bc -ne 0) { 'Tela azul (0x{0:X})' -f $bc }
-                elseif ($btn -ne 0) { 'Você segurou o botão de ligar' }
-                elseif ($sl -ne 0) { 'Travou ao desligar/suspender' }
-                else { 'Desligou de repente (sem erro)' }
-            # hora real: números da mensagem do 6008 do mesmo boot, na ordem h m s dia mes ano
-            $real = $e.TimeCreated
-            $m = @($sh | Where-Object { [math]::Abs(($_.TimeCreated - $e.TimeCreated).TotalMinutes) -le 5 }) | Select-Object -First 1
-            if ($m) {
-                $n = @([regex]::Matches($m.Message, '\d+') | ForEach-Object { [int]$_.Value })
-                if ($n.Count -ge 6) { try { $real = Get-Date -Year $n[5] -Month $n[4] -Day $n[3] -Hour $n[0] -Minute $n[1] -Second $n[2] } catch { } }
-            }
-            $off = ($e.TimeCreated - $real).TotalMinutes
-            if ($off -lt 0) { $off = 0 }
-            $s = @($sleeps | Where-Object { $_.TimeCreated -le $real }) | Select-Object -Last 1
-            $w = @($wakes | Where-Object { $_.TimeCreated -le $real }) | Select-Object -Last 1
-            [pscustomobject]@{
-                Quando = $real
-                Tipo = $tipo
-                Estado = $(if ($s -and (-not $w -or $s.TimeCreated -gt $w.TimeCreated)) { 'Suspenso (dormindo)' } else { 'Ligado, em uso' })
-                Desligado = $(if ($off -lt 2) { 'voltou na hora' } elseif ($off -lt 60) { '{0:N0} min' -f $off } else { '{0:N1} h' -f ($off / 60) })
-                Sozinho = ($off -lt 2)
-            }
-        }
-    }
-}
+. (Join-Path $Here 'DriverLogic.ps1')
 . $Logic
 
 # ================================================================ referência, backup e vigia
@@ -558,6 +157,7 @@ function Get-WatchIssues {
 # Funções usadas por TODO script que roda como administrador. O script vai direto na linha de comando
 # (-EncodedCommand), nunca num arquivo que outro programa poderia trocar antes do "Sim" do UAC.
 $ElevLib = @'
+$operationLease=[IO.File]::Open((Join-Path (Split-Path '__LOG__') 'session.lock'),'OpenOrCreate','ReadWrite','ReadWrite')
 $L = New-Object Collections.ArrayList
 function W([string]$t) { [void]$L.Add($t) }
 # log em arquivo NOVO (CreateNew): nunca sobrescreve nada, nem segue link simbólico plantado antes
@@ -954,11 +554,43 @@ if ($SelfTest) {
 }
 
 # ================================================================ interface (WPF)
+# Uma janela por usuário/sessão, inclusive ao executar o .ps1 diretamente.
+# Eventos são criados antes do mutex para preservar cliques durante a inicialização.
+$instanceUser = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$instanceName = 'Local\HollowDrivers.UI.' + $instanceUser
+$activateEvent = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::AutoReset, ($instanceName + '.Activate'))
+$rescueEvent = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::AutoReset, ($instanceName + '.Rescue'))
+$uiMutex = New-Object Threading.Mutex($false, $instanceName)
+$ownsUiMutex = $false
+try {
+    try { $ownsUiMutex = $uiMutex.WaitOne(0) }
+    catch [Threading.AbandonedMutexException] { $ownsUiMutex = $true }
+    if (-not $ownsUiMutex) {
+        # Transfere a permissão de foco recebida pelo clique para a janela existente.
+        if (-not ('DG.InstanceFocus' -as [type])) {
+            Add-Type -Namespace DG -Name InstanceFocus -MemberDefinition '[DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int processId);'
+        }
+        $currentSession = (Get-Process -Id $PID).SessionId
+        Get-Process -Name powershell -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $currentSession -and $_.MainWindowTitle -eq 'HollowDrivers' } |
+            ForEach-Object { [void][DG.InstanceFocus]::AllowSetForegroundWindow($_.Id) }
+        if ($Rescue) { [void]$rescueEvent.Set() }
+        [void]$activateEvent.Set()
+        return
+    }
+
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 $dwmOk = $false
 # carrega pela memória: LoadFrom travaria o .exe e impediria a atualização automática de substituí-lo
 if (Test-Path $Exe) { try { [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes($Exe)); $dwmOk = [bool]('DG.Dwm' -as [type]) } catch { } }
 if (-not $dwmOk) { Add-Type -Namespace DG -Name Dwm -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);' }
+
+# A janela roda no PowerShell: define a identidade neste processo, antes de criar a UI,
+# para a barra de tarefas usar o ícone da janela em vez do agrupamento do PowerShell.
+if (-not ('DG.ShellIdentity' -as [type])) {
+    Add-Type -Namespace DG -Name ShellIdentity -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)] public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);'
+}
+[DG.ShellIdentity]::SetCurrentProcessExplicitAppUserModelID('HollowDrivers.Desktop')
 
 $Hex = @{ bad = '#F87171'; warn = '#FBBF24'; ok = '#34D399'; info = '#8B93A1'; ask = '#FF6A55' }
 # (a cor 'ask' segue o tema; é ajustada depois que o tema é carregado)
@@ -1325,543 +957,7 @@ $ResXaml = @'
 </ResourceDictionary>
 '@
 
-$MainXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="HollowDrivers" Width="1120" Height="760" MinWidth="980" MinHeight="640" WindowStartupLocation="CenterScreen"
-        Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
-        UseLayoutRounding="True">
-  <Grid>
-    <!-- ======================= INÍCIO ======================= -->
-    <Grid x:Name="HomeView">
-      <Grid.Background>
-        <RadialGradientBrush Center="0.5,0.3" GradientOrigin="0.5,0.3" RadiusX="0.6" RadiusY="0.65">
-          <GradientStop Color="__BGR__" Offset="0"/>
-          <GradientStop Color="#0F1115" Offset="1"/>
-        </RadialGradientBrush>
-      </Grid.Background>
-      <DockPanel>
-        <Border x:Name="HomeRail" DockPanel.Dock="Left" Width="228" Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-          <DockPanel x:Name="HomeRailBox" Margin="14,18,14,14">
-            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-              <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEA18;" FontSize="17" Foreground="__ICON__" VerticalAlignment="Center" Margin="0,2,9,0"/>
-              <TextBlock x:Name="HomeLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-            </StackPanel>
-            <Button x:Name="BtnRailHome" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-            <Button x:Name="BtnHomeScan" DockPanel.Dock="Bottom" Style="{StaticResource NavBtn}" Tag="&#xE721;" Content="Analisar agora"/>
-            <StackPanel>
-              <ToggleButton x:Name="HomeNavHome" Style="{StaticResource Nav}" Tag="&#xE80F;" Content="Início" IsChecked="True"/>
-              <Button x:Name="BtnAdvanced" Style="{StaticResource NavBtn}" Tag="&#xE896;" Content="Drivers"/>
-              <Button x:Name="HomeNavVideo" Style="{StaticResource NavBtn}" Tag="&#xE7F4;" Content="Meus drivers"/>
-              <Button x:Name="HomeNavWin" Style="{StaticResource NavBtn}" Tag="&#xE895;" Content="Windows Update"/>
-              <Button x:Name="HomeNavSystem" Style="{StaticResource NavBtn}" Tag="&#xE946;" Content="Sistema"/>
-              <Button x:Name="HomeNavGuard" Style="{StaticResource NavBtn}" Tag="&#xEA18;" Content="Proteção"/>
-              <Button x:Name="HomeNavClean" Style="{StaticResource NavBtn}" Tag="&#xE74D;" Content="Limpeza"/>
-              <Button x:Name="BtnHomeConfig" Style="{StaticResource NavBtn}" Tag="&#xE713;" Content="Configurações"/>
-            </StackPanel>
-          </DockPanel>
-        </Border>
-        <Grid DockPanel.Dock="Bottom" Margin="28,0,28,16">
-          <TextBlock x:Name="FooterText" Foreground="{StaticResource Dim}" FontSize="12" VerticalAlignment="Center"/>
-        </Grid>
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,30,0,20" Width="720">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-              <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEA18;" FontSize="26" Foreground="__ICON__" VerticalAlignment="Center" Margin="0,3,10,0"/>
-              <TextBlock Text="HollowDrivers" FontSize="30" FontWeight="SemiBold" FontFamily="{StaticResource Display}"/>
-            </StackPanel>
-            <TextBlock Text="Verifica seus drivers e avisa quando algo der errado." Foreground="{StaticResource Dim}" FontSize="14" HorizontalAlignment="Center" Margin="0,6,0,0"/>
-
-            <Button x:Name="BigBtn" Width="220" Height="220" Margin="0,40,0,36" Cursor="Hand" HorizontalAlignment="Center" Focusable="False">
-              <Button.Template>
-                <ControlTemplate TargetType="Button">
-                  <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
-                    <Grid.RenderTransform><ScaleTransform x:Name="Sc" ScaleX="1" ScaleY="1"/></Grid.RenderTransform>
-                    <Ellipse Fill="__HALO__" Margin="-18"/>
-                    <Ellipse Fill="{StaticResource Accent}">
-                      <Ellipse.Effect><DropShadowEffect Color="__GLOW__" BlurRadius="70" ShadowDepth="0" Opacity="0.55"/></Ellipse.Effect>
-                    </Ellipse>
-                    <Ellipse Margin="12" Stroke="#40FFFFFF" StrokeThickness="1.5"/>
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Grid>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True">
-                      <Trigger.EnterActions>
-                        <BeginStoryboard>
-                          <Storyboard>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1.05" Duration="0:0:0.18"/>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1.05" Duration="0:0:0.18"/>
-                          </Storyboard>
-                        </BeginStoryboard>
-                      </Trigger.EnterActions>
-                      <Trigger.ExitActions>
-                        <BeginStoryboard>
-                          <Storyboard>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.18"/>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.18"/>
-                          </Storyboard>
-                        </BeginStoryboard>
-                      </Trigger.ExitActions>
-                    </Trigger>
-                    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Button.Template>
-              <Grid Width="220" Height="220">
-                <Ellipse x:Name="Spinner" Margin="5" Stroke="White" StrokeThickness="4" StrokeDashArray="30 200" StrokeDashCap="Round" Opacity="0" RenderTransformOrigin="0.5,0.5">
-                  <Ellipse.RenderTransform><RotateTransform x:Name="SpinRot"/></Ellipse.RenderTransform>
-                </Ellipse>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                  <TextBlock x:Name="BigIcon" FontFamily="{StaticResource Icons}" Text="&#xE721;" FontSize="36" Foreground="White" HorizontalAlignment="Center"/>
-                  <TextBlock x:Name="BigLabel" Text="ANALISAR" FontSize="24" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" Margin="0,8,0,0" FontFamily="{StaticResource Display}"/>
-                </StackPanel>
-              </Grid>
-            </Button>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-              <Border x:Name="VerdictBadge" Width="38" Height="38" CornerRadius="19" Background="#1F232C" Margin="0,0,12,0">
-                <TextBlock x:Name="VerdictIcon" FontFamily="{StaticResource Icons}" Text="&#xE946;" FontSize="17" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              </Border>
-              <TextBlock x:Name="VerdictText" Text="Pronto para verificar" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" FontFamily="{StaticResource Display}"/>
-            </StackPanel>
-            <TextBlock x:Name="VerdictSub" Text="Clique no botão para analisar seu PC" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,8,0,0" FontSize="13"/>
-            <StackPanel x:Name="Findings" Margin="0,26,0,0"/>
-          </StackPanel>
-        </ScrollViewer>
-      </DockPanel>
-    </Grid>
-
-    <!-- ======================= AVANÇADO ======================= -->
-    <Grid x:Name="AdvView" Visibility="Collapsed">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="AdvCol" Width="228"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-
-      <!-- ===== barra lateral ===== -->
-      <Border Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-        <DockPanel x:Name="AdvRailBox" Margin="14,18,14,14">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-            <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEA18;" FontSize="17" Foreground="__ICON__" VerticalAlignment="Center" Margin="0,2,9,0"/>
-            <TextBlock x:Name="AdvLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-          </StackPanel>
-          <Button x:Name="BtnRailAdv" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-          <StackPanel>
-            <Button x:Name="BtnBack" Style="{StaticResource NavBtn}" Tag="&#xE80F;" Content="Início"/>
-            <ToggleButton x:Name="NavDrivers" Style="{StaticResource Nav}" Tag="&#xE896;" Content="Drivers" IsChecked="True"/>
-            <ToggleButton x:Name="NavVideo" Style="{StaticResource Nav}" Tag="&#xE7F4;" Content="Meus drivers"/>
-            <ToggleButton x:Name="NavWin" Style="{StaticResource Nav}" Tag="&#xE895;" Content="Windows Update"/>
-            <ToggleButton x:Name="NavSystem" Style="{StaticResource Nav}" Tag="&#xE946;" Content="Sistema"/>
-            <ToggleButton x:Name="NavGuard" Style="{StaticResource Nav}" Tag="&#xEA18;" Content="Proteção"/>
-            <ToggleButton x:Name="NavClean" Style="{StaticResource Nav}" Tag="&#xE74D;" Content="Limpeza"/>
-            <Button x:Name="BtnAdvConfig" Style="{StaticResource NavBtn}" Tag="&#xE713;" Content="Configurações"/>
-
-          </StackPanel>
-        </DockPanel>
-      </Border>
-
-      <!-- ===== seção: Drivers ===== -->
-      <Grid x:Name="PanDrivers" Grid.Column="1" Margin="26,20,26,14">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Drivers" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Tudo que está instalado no seu PC, com o estado de cada driver." Style="{StaticResource SectionSub}"/>
-          <WrapPanel Margin="0,16,0,0">
-            <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-            <Button x:Name="BtnScan" Style="{StaticResource PillAccent}" Content="Escanear"/>
-            <Button x:Name="BtnUpd" Content="Atualizar drivers"/>
-            <Button x:Name="BtnAll" Content="Exportar para pendrive"/>
-            <Button x:Name="BtnWu" Content="Windows Update"/>
-          </WrapPanel>
-        </StackPanel>
-
-        <StackPanel Grid.Row="1" Margin="0,10,0,10">
-          <StackPanel Orientation="Horizontal">
-            <ToggleButton x:Name="ChipAll" Style="{StaticResource Chip}" Tag="all" Content="Todos" IsChecked="True"/>
-            <ToggleButton x:Name="ChipBad" Style="{StaticResource Chip}" Tag="bad" Content="Com problema"/>
-            <ToggleButton x:Name="ChipOld" Style="{StaticResource Chip}" Tag="old" Content="Antigos"/>
-            <ToggleButton x:Name="ChipVideo" Style="{StaticResource Chip}" Tag="Vídeo" Content="Vídeo"/>
-            <ToggleButton x:Name="ChipNet" Style="{StaticResource Chip}" Tag="Rede" Content="Rede"/>
-            <ToggleButton x:Name="ChipAudio" Style="{StaticResource Chip}" Tag="Áudio" Content="Áudio"/>
-            <Border Width="250" Margin="10,0,0,0" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="13,4">
-              <DockPanel>
-                <TextBlock DockPanel.Dock="Left" FontFamily="{StaticResource Icons}" Text="&#xE721;" Foreground="{StaticResource Dim}" VerticalAlignment="Center" Margin="0,0,9,0" FontSize="12"/>
-                <TextBox x:Name="SearchBox"/>
-              </DockPanel>
-            </Border>
-          </StackPanel>
-          <CheckBox x:Name="ChkMs" Content="Mostrar drivers genéricos da Microsoft" Margin="2,12,0,0"/>
-        </StackPanel>
-
-      <Border Grid.Row="2" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="4">
-       <Grid>
-        <TextBlock x:Name="EmptyText" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" Foreground="{StaticResource Dim}" FontSize="13.5"/>
-        <DataGrid x:Name="DriverGrid" AutoGenerateColumns="False">
-          <DataGrid.Columns>
-            <DataGridTemplateColumn Header="Status" SortMemberPath="Ordem" Width="175">
-              <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate>
-                  <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse Width="8" Height="8" Fill="{Binding Cor}" Margin="0,0,9,0"/>
-                    <TextBlock Text="{Binding Status}" Foreground="{Binding Cor}" FontWeight="SemiBold"/>
-                  </StackPanel>
-                </DataTemplate>
-              </DataGridTemplateColumn.CellTemplate>
-            </DataGridTemplateColumn>
-            <DataGridTextColumn Header="Categoria" Binding="{Binding Categoria}" Width="130"/>
-            <DataGridTextColumn Header="Dispositivo" Binding="{Binding Dispositivo}" Width="*"/>
-            <DataGridTextColumn Header="Fabricante" Binding="{Binding Fabricante}" Width="170"/>
-            <DataGridTextColumn Header="Versão" Binding="{Binding Versao}" Width="130"/>
-            <DataGridTextColumn Header="Data" Binding="{Binding Data, StringFormat=dd/MM/yyyy}" Width="95"/>
-            <DataGridTextColumn Header="Idade" Binding="{Binding Idade}" Width="65"/>
-            <DataGridTextColumn Header="INF" Binding="{Binding INF}" Width="95"/>
-          </DataGrid.Columns>
-        </DataGrid>
-       </Grid>
-      </Border>
-
-      <TextBlock Grid.Row="3" x:Name="StatusText" Foreground="{StaticResource Dim}" FontSize="12" Margin="4,10,0,0"/>
-      </Grid>
-
-      <!-- ===== seção: Meus drivers ===== -->
-       <Grid x:Name="PanVideo" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
-         <Grid.RowDefinitions>
-           <RowDefinition Height="Auto"/>
-           <RowDefinition Height="Auto"/>
-           <RowDefinition Height="*"/>
-         </Grid.RowDefinitions>
-         <StackPanel>
-           <TextBlock Text="Meus drivers" Style="{StaticResource SectionTitle}"/>
-           <TextBlock Text="Cada driver tem sua própria cópia. Veja o que já está protegido e faça backup dos que faltam." Style="{StaticResource SectionSub}"/>
-         </StackPanel>
-         <Border Grid.Row="1" Margin="0,18,0,0" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="20,16">
-           <Grid>
-             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-             <StackPanel>
-               <TextBlock Text="PROTEÇÃO DOS DRIVERS" Style="{StaticResource GroupLbl}"/>
-               <TextBlock x:Name="KeyCoverage" Text="Verificando cópias..." FontSize="22" FontWeight="SemiBold" FontFamily="{StaticResource Display}" Margin="0,3,0,2"/>
-               <TextBlock x:Name="KeyResumo" Foreground="{StaticResource Dim}" FontSize="12.5"/>
-             </StackPanel>
-             <Button Grid.Column="1" x:Name="BtnKeyAll" Style="{StaticResource PillAccent}" Content="Fazer backup dos que faltam" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="18,0,0,0" Padding="18,10"/>
-           </Grid>
-         </Border>
-         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
-           <StackPanel>
-             <Grid>
-               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-               <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="20,16">
-                 <StackPanel>
-                   <TextBlock x:Name="GpuText" TextWrapping="Wrap" LineHeight="22"/>
-                   <WrapPanel Margin="0,12,0,0">
-                     <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-                     <Button x:Name="BtnGood" Style="{StaticResource PillAccent}" Content="Fazer backup"/>
-                     <Button x:Name="BtnRestore" Content="Restaurar"/>
-                     <Button x:Name="BtnHist" Content="Histórico"/>
-                     <Button x:Name="BtnEnable" Style="{StaticResource PillAccent}" Content="Reativar placa" Visibility="Collapsed"/>
-                   </WrapPanel>
-                 </StackPanel>
-               </Border>
-               <Border Grid.Column="1" Margin="16,0,0,0" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="20,16">
-                 <TextBlock x:Name="SysText" TextWrapping="Wrap" LineHeight="22"/>
-               </Border>
-             </Grid>
-             <StackPanel Margin="0,24,0,0">
-               <TextBlock Text="OUTROS DRIVERS" Style="{StaticResource GroupLbl}"/>
-               <TextBlock Text="O estado e a cópia de cada driver aparecem separadamente." Foreground="{StaticResource Dim}" FontSize="12.5" Margin="0,1,0,12"/>
-               <WrapPanel x:Name="KeyCards"/>
-             </StackPanel>
-             <Expander Header="Ver lista técnica completa" Foreground="{StaticResource Text}" FontWeight="SemiBold" Margin="0,8,0,20">
-               <Border Margin="0,12,0,0" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="4">
-                 <DataGrid x:Name="KeyGrid" AutoGenerateColumns="False" Height="320">
-                   <DataGrid.Columns>
-                     <DataGridTemplateColumn Header="Situação" Width="190">
-                       <DataGridTemplateColumn.CellTemplate>
-                         <DataTemplate>
-                           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                             <Ellipse Width="8" Height="8" Fill="{Binding Cor}" Margin="0,0,9,0"/>
-                             <TextBlock Text="{Binding Estado}" Foreground="{Binding Cor}" FontWeight="SemiBold"/>
-                           </StackPanel>
-                         </DataTemplate>
-                       </DataGridTemplateColumn.CellTemplate>
-                     </DataGridTemplateColumn>
-                     <DataGridTextColumn Header="Categoria" Binding="{Binding Categoria}" Width="120"/>
-                     <DataGridTextColumn Header="Dispositivo" Binding="{Binding Nome}" Width="*"/>
-                     <DataGridTextColumn Header="Fabricante" Binding="{Binding Fabricante}" Width="160"/>
-                     <DataGridTextColumn Header="Versão" Binding="{Binding Versao}" Width="130"/>
-                     <DataGridTextColumn Header="Cópia salva" Binding="{Binding Backup}" Width="120"/>
-                   </DataGrid.Columns>
-                 </DataGrid>
-               </Border>
-             </Expander>
-           </StackPanel>
-         </ScrollViewer>
-       </Grid>
-       <!-- ===== seção: Sistema ===== -->
-      <Grid x:Name="PanSystem" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Sistema" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Saúde do PC, ponto de restauração e os sites oficiais do seu hardware." Style="{StaticResource SectionSub}"/>
-        </StackPanel>
-        <Border Grid.Row="1" Margin="0,18,0,0" MaxWidth="720" HorizontalAlignment="Left" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <TextBlock x:Name="HealthText" TextWrapping="Wrap" LineHeight="23"/>
-        </Border>
-        <WrapPanel Grid.Row="2" Margin="0,16,0,0">
-          <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-          <Button x:Name="BtnCrash" Style="{StaticResource PillAccent}" Content="Quedas do PC"/>
-          <Button x:Name="BtnPoint" Content="Criar ponto de restauração"/>
-          <Button x:Name="BtnSites" Content="Sites oficiais  ▾"/>
-          <Button x:Name="BtnCsv" Content="Exportar CSV"/>
-
-        </WrapPanel>
-        <Popup x:Name="SitesPopup" PlacementTarget="{Binding ElementName=BtnSites}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" VerticalOffset="2">
-          <Border Background="{StaticResource Surface2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="12" Padding="6">
-            <StackPanel x:Name="SitesList"/>
-          </Border>
-        </Popup>
-      <Border Grid.Row="3" Margin="0,22,0,0" MaxWidth="720" HorizontalAlignment="Left" VerticalAlignment="Top"
-                 Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-           <StackPanel>
-             <TextBlock Text="LIBERAR ESPAÇO" Style="{StaticResource GroupLbl}"/>
-             <TextBlock x:Name="StorageText" FontSize="18" FontWeight="SemiBold" FontFamily="{StaticResource Display}" Margin="0,3,0,8"/>
-             <TextBlock Text="Analise arquivos temporários e logs antigos aqui. Para aplicativos e arquivos grandes, use a limpeza oficial do Windows."
-                        TextWrapping="Wrap" Foreground="{StaticResource Dim}" FontSize="12.5"/>
-             <WrapPanel Margin="0,14,0,0">
-               <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-               <Button x:Name="BtnCleanup" Style="{StaticResource PillAccent}" Content="Abrir Limpeza"/>
-               <Button x:Name="BtnStorageSense" Content="Configurar limpeza automática"/>
-             </WrapPanel>
-           </StackPanel>
-         </Border>
-       </Grid>
-
-      <!-- ===== seção: Limpeza ===== -->
-      <Grid x:Name="PanClean" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Limpeza" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Revise arquivos antigos e escolha o que deseja remover." Style="{StaticResource SectionSub}"/>
-        </StackPanel>
-        <Border Grid.Row="1" Margin="0,18,0,16" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="20,16">
-          <StackPanel>
-            <TextBlock x:Name="CleanDrive" FontSize="17" FontWeight="SemiBold" FontFamily="{StaticResource Display}"/>
-            <TextBlock x:Name="CleanSummary" Text="Clique em Analisar para procurar arquivos antigos." Foreground="{StaticResource Dim}" Margin="0,7,0,0" TextWrapping="Wrap"/>
-          </StackPanel>
-        </Border>
-        <Border Grid.Row="2" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="12" MinHeight="230">
-          <DataGrid x:Name="CleanGrid" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" HeadersVisibility="Column">
-            <DataGrid.Columns>
-              <DataGridCheckBoxColumn Header="Limpar" Binding="{Binding Select, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="76"/>
-              <DataGridTextColumn Header="Categoria" Binding="{Binding Category}" IsReadOnly="True" Width="190"/>
-              <DataGridTextColumn Header="Arquivos" Binding="{Binding Count}" IsReadOnly="True" Width="90"/>
-              <DataGridTextColumn Header="Espaço" Binding="{Binding Size}" IsReadOnly="True" Width="100"/>
-              <DataGridTextColumn Header="Descrição" Binding="{Binding Description}" IsReadOnly="True" Width="*"/>
-            </DataGrid.Columns>
-          </DataGrid>
-        </Border>
-        <StackPanel Grid.Row="3" Margin="0,16,0,0">
-          <WrapPanel>
-            <Button x:Name="BtnCleanScan" Style="{StaticResource Pill}" Content="Analisar"/>
-            <Button x:Name="BtnCleanRun" Style="{StaticResource PillAccent}" Content="Limpar selecionados" IsEnabled="False"/>
-            <Button x:Name="BtnCleanWindows" Style="{StaticResource Pill}" Content="Limpeza do Windows"/>
-            <Button x:Name="BtnCleanSense" Style="{StaticResource Pill}" Content="Limpeza automática"/>
-          </WrapPanel>
-          <TextBlock x:Name="CleanStatus" Text="Arquivos em uso e dados de backup são preservados." Foreground="{StaticResource Dim}" FontSize="12" Margin="2,10,0,0" TextWrapping="Wrap"/>
-        </StackPanel>
-      </Grid>
-      <!-- ===== seção: Windows Update ===== -->
-      <Grid x:Name="PanWin" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Windows Update" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Controle o que o Windows instala sozinho e guarde um ponto para voltar se algo quebrar." Style="{StaticResource SectionSub}"/>
-        </StackPanel>
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,18,0,0">
-          <StackPanel MaxWidth="760" HorizontalAlignment="Left">
-        <Border MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="ATUALIZAÇÕES DO WINDOWS" Style="{StaticResource GroupLbl}"/>
-            <TextBlock x:Name="WuText" TextWrapping="Wrap" LineHeight="22"/>
-            <WrapPanel Margin="0,14,0,0">
-              <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-              <Button x:Name="BtnWuHold" Style="{StaticResource PillAccent}" Content="Segurar atualizações"/>
-              <Button x:Name="BtnWuKeep" Content="Manter segurado"/>
-              <Button x:Name="BtnWuDrv" Content="Bloquear troca de drivers"/>
-            </WrapPanel>
-          </StackPanel>
-        </Border>
-        <Border Margin="0,16,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="BACKUP DO WINDOWS (PONTO DE RESTAURAÇÃO)" Style="{StaticResource GroupLbl}"/>
-            <TextBlock x:Name="SrText" TextWrapping="Wrap" LineHeight="22"/>
-            <WrapPanel Margin="0,14,0,0">
-              <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-              <Button x:Name="BtnSrPoint" Style="{StaticResource PillAccent}" Content="Salvar backup do Windows"/>
-              <Button x:Name="BtnSrOpen" Content="Restaurar o Windows"/>
-            </WrapPanel>
-          </StackPanel>
-        </Border>
-          </StackPanel>
-        </ScrollViewer>
-      </Grid>
-
-      <!-- ===== seção: Proteção ===== -->
-      <Grid x:Name="PanGuard" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Proteção" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="O HollowDrivers vigiando seu PC em segundo plano." Style="{StaticResource SectionSub}"/>
-        </StackPanel>
-        <Border Grid.Row="1" Margin="0,18,0,0" MaxWidth="720" HorizontalAlignment="Left" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <TextBlock x:Name="GuardText" TextWrapping="Wrap" LineHeight="23"/>
-        </Border>
-        <WrapPanel Grid.Row="2" Margin="0,16,0,0">
-          <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-          <Button x:Name="BtnWatch" Style="{StaticResource PillAccent}" Content="Vigia automático"/>
-          <Button x:Name="BtnRescue" Content="Socorro automático"/>
-          <Button x:Name="BtnDb" Style="{StaticResource PillBad}" Content="Remover Driver Booster" Visibility="Collapsed"/>
-        </WrapPanel>
-      </Grid>
-    </Grid>
-
-    <!-- ======================= CONFIGURAÇÕES ======================= -->
-    <Grid x:Name="ConfigView" Background="{StaticResource Bg}" Visibility="Collapsed">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="ConfigCol" Width="228"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
-      </Grid.RowDefinitions>
-      <Border Grid.RowSpan="2" Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-        <DockPanel x:Name="ConfigRailBox" Margin="14,18,14,14">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-            <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEA18;" FontSize="17" Foreground="__ICON__" VerticalAlignment="Center" Margin="0,2,9,0"/>
-            <TextBlock x:Name="ConfigLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-          </StackPanel>
-          <Button x:Name="BtnRailConfig" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-          <StackPanel>
-            <Button x:Name="BtnConfigHome" Style="{StaticResource NavBtn}" Tag="&#xE80F;" Content="Início"/>
-            <Button x:Name="ConfigNavDrivers" Style="{StaticResource NavBtn}" Tag="&#xE896;" Content="Drivers"/>
-            <Button x:Name="ConfigNavVideo" Style="{StaticResource NavBtn}" Tag="&#xE7F4;" Content="Meus drivers"/>
-            <Button x:Name="ConfigNavWin" Style="{StaticResource NavBtn}" Tag="&#xE895;" Content="Windows Update"/>
-            <Button x:Name="ConfigNavSystem" Style="{StaticResource NavBtn}" Tag="&#xE946;" Content="Sistema"/>
-            <Button x:Name="ConfigNavGuard" Style="{StaticResource NavBtn}" Tag="&#xEA18;" Content="Proteção"/>
-            <Button x:Name="ConfigNavClean" Style="{StaticResource NavBtn}" Tag="&#xE74D;" Content="Limpeza"/>
-            <ToggleButton x:Name="ConfigNavSettings" Style="{StaticResource Nav}" Tag="&#xE713;" Content="Configurações" IsChecked="True"/>
-          </StackPanel>
-        </DockPanel>
-      </Border>
-      <Grid Grid.Column="1" Margin="30,22,30,0">
-        <StackPanel>
-          <TextBlock Text="Configurações" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Aparência do app e atualizações do próprio HollowDrivers." Style="{StaticResource SectionSub}"/>
-        </StackPanel>
-        <Button x:Name="BtnConfigClose" Style="{StaticResource NavBtn}" Tag="&#xE711;" Content="Fechar" HorizontalAlignment="Right" VerticalAlignment="Top"/>
-      </Grid>
-      <ScrollViewer Grid.Column="1" Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="30,18,30,22">
-        <StackPanel MaxWidth="760" HorizontalAlignment="Left">
-        <Border Margin="0,18,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="TEMA DE CORES" Style="{StaticResource GroupLbl}"/>
-            <TextBlock Text="A cor de destaque do app. Ao trocar, o HollowDrivers reabre em um segundo." Foreground="{StaticResource Dim}" FontSize="12.5" Margin="0,0,0,14"/>
-            <WrapPanel x:Name="ConfigThemes"/>
-          </StackPanel>
-        </Border>
-        <Border Margin="0,16,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="ATUALIZAÇÕES DO HollowDrivers" Style="{StaticResource GroupLbl}"/>
-            <TextBlock x:Name="ConfigUpd" TextWrapping="Wrap" LineHeight="22"/>
-            <WrapPanel Margin="0,14,0,0">
-              <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-              <Button x:Name="BtnAppCheck" Content="Procurar atualização"/>
-              <Button x:Name="BtnAppInstall" Style="{StaticResource PillAccent}" Content="Instalar atualização" Visibility="Collapsed"/>
-            </WrapPanel>
-          </StackPanel>
-        </Border>
-        </StackPanel>
-      </ScrollViewer>
-    </Grid>
-  </Grid>
-</Window>
-'@
-
-$DialogXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        WindowStyle="None" AllowsTransparency="True" Background="Transparent" SizeToContent="Height" Width="500"
-        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="NoResize"
-        FontFamily="Segoe UI Variable Text, Segoe UI" Foreground="{StaticResource Text}">
-  <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="16" Padding="24,22" Margin="20">
-    <Border.Effect><DropShadowEffect BlurRadius="30" ShadowDepth="0" Opacity="0.6"/></Border.Effect>
-    <StackPanel>
-      <StackPanel Orientation="Horizontal">
-        <Border x:Name="Badge" Width="36" Height="36" CornerRadius="18">
-          <TextBlock x:Name="Ico" FontFamily="{StaticResource Icons}" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-        </Border>
-        <TextBlock x:Name="Head" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0" FontFamily="{StaticResource Display}"/>
-      </StackPanel>
-      <TextBlock x:Name="Body" TextWrapping="Wrap" Margin="0,14,0,22" Foreground="#C9CED6" LineHeight="21" FontSize="13.5"/>
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-        <Button x:Name="No" Style="{StaticResource Pill}" Content="Cancelar" Visibility="Collapsed" IsCancel="True"/>
-        <Button x:Name="Yes" Style="{StaticResource PillAccent}" Content="OK" Margin="0" IsDefault="True"/>
-      </StackPanel>
-    </StackPanel>
-  </Border>
-</Window>
-'@
-
-$TableXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="940" Height="500" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13">
-  <Grid Margin="22,18,22,18">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-    <TextBlock x:Name="Head" FontSize="19" FontWeight="SemiBold" FontFamily="{StaticResource Display}"/>
-    <Border Grid.Row="1" Margin="0,14,0,14" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="4">
-      <DataGrid x:Name="G" AutoGenerateColumns="True">
-        <DataGrid.RowStyle>
-          <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
-            <Style.Triggers>
-              <DataTrigger Binding="{Binding Destaque}" Value="True"><Setter Property="Foreground" Value="#F87171"/></DataTrigger>
-            </Style.Triggers>
-          </Style>
-        </DataGrid.RowStyle>
-      </DataGrid>
-    </Border>
-    <DockPanel Grid.Row="2">
-      <Button x:Name="Close" DockPanel.Dock="Right" Style="{StaticResource PillAccent}" Content="Fechar" Margin="12,0,0,0" IsCancel="True"/>
-      <TextBlock x:Name="Note" TextWrapping="Wrap" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
-    </DockPanel>
-  </Grid>
-</Window>
-'@
+. (Join-Path $Here 'Views.ps1')
 
 $app = [Windows.Application]::Current
 if (-not $app) { $app = New-Object Windows.Application }
@@ -1880,6 +976,20 @@ function Set-DarkTitle($w) {
 $Hex.ask = $Theme.Icon
 $script:Win = [Windows.Markup.XamlReader]::Parse((Use-Theme $MainXaml))
 $Win = $script:Win
+$LogoFile = Join-Path $Here 'HollowDrivers-logo.png'
+if (-not (Test-Path $LogoFile)) { $LogoFile = Join-Path $Here 'assets\HollowDrivers-logo.png' }
+if (Test-Path $LogoFile) {
+    $brandImage = New-Object Windows.Media.Imaging.BitmapImage
+    $brandImage.BeginInit()
+    $brandImage.CacheOption = [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $brandImage.UriSource = [Uri]$LogoFile
+    $brandImage.EndInit()
+    $brandImage.Freeze()
+    foreach ($brandName in 'BrandLogo1', 'BrandLogo2', 'BrandLogo3', 'BrandLogo4') {
+        $brandControl = $Win.FindName($brandName)
+        if ($brandControl) { $brandControl.Source = $brandImage }
+    }
+}
 foreach ($n in 'HomeView', 'AdvView', 'BtnAdvanced', 'BtnHomeScan', 'BtnHomeConfig', 'FooterText', 'BigBtn', 'Spinner', 'SpinRot', 'BigIcon', 'BigLabel', 'VerdictBadge',
     'VerdictIcon', 'VerdictText', 'VerdictSub', 'Findings', 'BtnBack', 'GpuText', 'HealthText', 'BtnScan', 'BtnUpd', 'BtnGood',
     'HomeLogoText', 'HomeNavHome', 'HomeNavVideo', 'HomeNavSystem', 'HomeNavClean', 'HomeNavGuard', 'HomeNavWin', 'BtnAdvConfig', 'BtnRestore', 'BtnPoint', 'BtnAll', 'BtnHist', 'BtnEnable', 'BtnCrash', 'BtnWu', 'BtnSites', 'BtnCsv', 'BtnWatch', 'BtnDb', 'SitesPopup',
@@ -1894,6 +1004,11 @@ if (Test-Path $IconFile) { try { $Win.Icon = [Windows.Media.Imaging.BitmapFrame]
 $FooterText.Text = "HollowDrivers $AppVersion  •  nada é instalado sem você confirmar  •  só avisos e sites oficiais"
 
 # ---------------------------------------------------------------- diálogos
+
+. (Join-Path $Here 'CloneAssistant.ps1')
+$Win.FindName('BtnClone').add_Click({ Show-CloneAssistant })
+$Win.FindName('BtnHistory').add_Click({ Show-OperationHistory })
+$Win.FindName('BtnDiagnostics').add_Click({ Export-OperationDiagnostics })
 
 function Show-Dialog([string]$head, [string]$body, [string]$kind = 'info', [switch]$YesNo, [string]$YesText = 'OK', [string]$NoText = 'Cancelar') {
     $d = [Windows.Markup.XamlReader]::Parse($DialogXaml)
@@ -1939,50 +1054,7 @@ function Show-TableWindow([string]$title, $rows, [string]$note) {
 
 # ---------------------------------------------------------------- tarefas em segundo plano (a tela não trava)
 
-$script:Tasks = New-Object Collections.ArrayList
-$BgTimer = New-Object Windows.Threading.DispatcherTimer
-$BgTimer.Interval = [TimeSpan]::FromMilliseconds(150)
-$script:Prog = [hashtable]::Synchronized(@{ Text = '' })
-$script:ProgRun = $null
-$BgTimer.add_Tick({
-    if ($script:ProgRun -and $script:Prog.Text -and $script:ProgRun.Text -ne $script:Prog.Text) { $script:ProgRun.Text = $script:Prog.Text }
-    foreach ($t in @($script:Tasks)) {
-        if (-not $t.Handle.IsCompleted) { continue }
-        $script:Tasks.Remove($t)
-        $out = $null; $err = $null
-        try { $out = $t.Ps.EndInvoke($t.Handle) }
-        catch { $err = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
-        $t.Ps.Dispose(); $t.Rs.Dispose()
-        & $t.Done $out $err
-    }
-    if (-not $script:Tasks.Count) { $BgTimer.Stop() }
-})
-function Start-Bg([string]$code, [scriptblock]$onDone, [hashtable]$vars = @{}) {
-    $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
-    $rs.SessionStateProxy.SetVariable('Prog', $script:Prog)
-    foreach ($key in $vars.Keys) { $rs.SessionStateProxy.SetVariable($key, $vars[$key]) }
-    $ps = [PowerShell]::Create(); $ps.Runspace = $rs; [void]$ps.AddScript($code)
-    [void]$script:Tasks.Add(@{ Ps = $ps; Rs = $rs; Handle = $ps.BeginInvoke(); Done = $onDone })
-    $BgTimer.Start()
-}
-
-# Roda um script como administrador (o Windows pede confirmação) e devolve o log.
-# O script vai inteiro na linha de comando (-EncodedCommand): não existe arquivo .ps1 que um programa
-# malicioso pudesse trocar entre o app pedir a permissão e você clicar "Sim" no UAC.
-function Invoke-Elevated([string]$tpl, [hashtable]$map, [string]$name, [scriptblock]$onDone) {
-    Remove-Item (Join-Path $DataDir "$name.ps1"), (Join-Path $DataDir "$name.log") -Force -ErrorAction SilentlyContinue   # sobras das versões antigas
-    $log = Join-Path $DataDir ('{0}-{1}.log' -f $name, [guid]::NewGuid().ToString('N'))
-    $code = (Expand-Tpl $ElevLib @{ '__LOG__' = $log }) + "`n" + (Expand-Tpl $tpl $map)
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
-    if ($enc.Length -gt 30000) { & $onDone '' 'comando grande demais para a linha de comando do Windows'; return }
-    $script:ElevLog = $log; $script:ElevDone = $onDone
-    Start-Bg ("Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -ExecutionPolicy Bypass -EncodedCommand {0}'" -f $enc) {
-        param($out, $err)
-        $text = ''
-        if (Test-Path $script:ElevLog) { $text = Get-Content $script:ElevLog -Raw; Remove-Item $script:ElevLog -Force -ErrorAction SilentlyContinue }
-        & $script:ElevDone $text $err
-    }
-}
+. (Join-Path $Here 'Operations.ps1')
 
 $LogicText = $Logic.ToString()
 $ScanCode = @'
@@ -2404,7 +1476,7 @@ function Act-KeyBackup([string]$id) {
     Start-Bg $code {
         param($out, $err)
 
-        $rc = if ($out -and $out.Count) { [int]"$($out[$out.Count - 1])" } else { 99 }
+        $rc = if ($null -ne $out -and $out.Count) { [int]"$($out[$out.Count - 1])" } else { 99 }
         if ($err -or $rc -ge 8) { [void](Show-Dialog 'Backup falhou' "Não foi possível copiar o driver (código $rc).`n$err" 'bad') }
         else { Set-KeyNormal $script:KeyBkId }
         Update-KeyCards; Update-Cards; Update-Home
@@ -2876,12 +1948,11 @@ function Start-Backup($g) {
         param($out, $err)
         $script:BackupBusy = $false
         $v = $script:BackupVersion
-        $rc = if ($out -and $out.Count) { [int]"$($out[$out.Count - 1])" } else { 99 }
+        $rc = if ($null -ne $out -and $out.Count) { [int]"$($out[$out.Count - 1])" } else { 99 }
         if ($err -or $rc -ge 8 -or -not (Get-Backup $v)) {
             [void](Show-Dialog 'Backup falhou' ("Não foi possível copiar o driver (código $rc).`n$err") 'bad')
         } else {
-            Get-ChildItem $BackupDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $v } |
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            Write-OperationEvent 'backup-video' 'concluido' ('Versao ' + $v + '; copias anteriores preservadas')
         }
         Update-Cards; Update-Home
     }
@@ -2891,7 +1962,7 @@ function Act-MarkGood {
     $g = $script:Gpu
     if (-not $g) { return }
     if ($g.Code -ne 0) { [void](Show-Dialog 'Agora não' 'A placa de vídeo está com erro. Salve o driver só quando o vídeo estiver funcionando.' 'warn'); return }
-    $msg = "Guardar uma cópia do driver de vídeo $($g.Version)?`n`n•   Com a cópia salva, dá para voltar para esta versão com um clique`n•   Ocupa cerca de 1 GB e substitui o backup anterior`n`nA cópia é feita em segundo plano; pode continuar usando o PC."
+    $msg = "Guardar uma cópia do driver de vídeo $($g.Version)?`n`n•   Com a cópia salva, dá para voltar para esta versão com um clique`n•   Ocupa cerca de 1 GB por versão; mantém os backups anteriores`n`nA cópia é feita em segundo plano; pode continuar usando o PC."
     if (-not (Show-Dialog 'Fazer backup do vídeo' $msg 'ask' -YesNo -YesText 'Fazer backup')) { return }
     Save-Baseline $g
     Start-Backup $g
@@ -3312,13 +2383,13 @@ function Update-WuCard {
     if ($null -eq $w.Pontos) {
         Add-Line $SrText 'Pontos de restauração: precisa de permissão de administrador para listar' $Hex.info 15 $true
     } elseif ($w.Pontos) {
-        Add-Line $SrText (Get-Plural $w.Pontos 'backup do Windows guardado' 'backups do Windows guardados') $Hex.ok 15 $true
+        Add-Line $SrText (Get-Plural $w.Pontos 'ponto de restauração guardado' 'pontos de restauração guardados') $Hex.ok 15 $true
         if ($w.UltimoPonto) { Add-Line $SrText ('Último: {0:dd/MM/yyyy HH:mm}' -f $w.UltimoPonto) '#C9CED6' 13 }
     } else {
-        Add-Line $SrText 'Nenhum backup do Windows guardado' $Hex.warn 15 $true
+        Add-Line $SrText 'Nenhum ponto de restauração guardado' $Hex.warn 15 $true
     }
     Add-Line $SrText $(if ($w.SrLigada) { '●  Proteção do sistema: ligada' } else { '●  Proteção do sistema: DESLIGADA — o Windows não guarda nada para voltar' }) $(if ($w.SrLigada) { $Hex.ok } else { $Hex.bad }) 13
-    Add-Line $SrText 'O ponto de restauração volta drivers, programas e configurações do Windows. Seus arquivos pessoais não são tocados.' $Hex.info 12.5
+    Add-Line $SrText 'O ponto de restauração reverte alterações do sistema. Não copia seus arquivos e não protege contra falha física do disco.' $Hex.info 12.5
 }
 
 function Start-WuCheck {
@@ -3398,19 +2469,19 @@ function Act-WuKeep {
 }
 
 function Act-SrPoint {
-    $msg = "Salvar um backup do Windows agora (ponto de restauração)?`n`n" +
+    $msg = "Criar um ponto de restauração agora?`n`n" +
         "•   Guarda drivers, programas e configurações do jeito que estão hoje`n" +
         "•   Se uma atualização ou driver quebrar o PC, dá para voltar para este momento`n" +
         "•   Seus arquivos pessoais não entram e não são alterados`n`n" +
         "Se a Proteção do Sistema estiver desligada, ela é ligada antes. O Windows vai pedir permissão de administrador."
-    if (-not (Show-Dialog 'Salvar backup do Windows?' $msg 'ask' -YesNo -YesText 'Salvar')) { return }
+    if (-not (Show-Dialog 'Criar ponto de restauração?' $msg 'ask' -YesNo -YesText 'Salvar')) { return }
     $BtnSrPoint.IsEnabled = $false; $BtnSrPoint.Content = 'Salvando...'
     Invoke-Elevated $WuTpl @{ '__HOLD__' = ''; '__DRV__' = ''; '__SR__' = '1'
         '__DESC__' = ('HollowDrivers {0:dd/MM/yyyy HH:mm}' -f (Get-Date)) } 'windows' {
         param($log, $err)
-        $BtnSrPoint.IsEnabled = $true; $BtnSrPoint.Content = 'Salvar backup do Windows'
+        $BtnSrPoint.IsEnabled = $true; $BtnSrPoint.Content = 'Criar ponto de restauração'
         if ($err) { [void](Show-Dialog 'Cancelado' 'O Windows não deu permissão de administrador, então nada mudou.' 'warn'); return }
-        if ($log -match 'PONTO=ok') { [void](Show-Dialog 'Backup salvo' 'Ponto de restauração criado. Se algo quebrar o PC, use "Restaurar o Windows" e escolha este ponto.' 'ok') }
+        if ($log -match 'PONTO=ok') { [void](Show-Dialog 'Ponto de restauração salvo' 'Ponto de restauração criado. Se algo quebrar o PC, use "Restaurar o Windows" e escolha este ponto.' 'ok') }
         elseif ($log -match 'PONTO=aviso: (.+)') { [void](Show-Dialog 'Já existe um recente' ("O Windows só cria um ponto a cada 24 horas e já existe um recente — você está protegido.`n`n" + $matches[1].Trim()) 'info') }
         elseif ($log -match 'PONTO=falhou: (.+)') { [void](Show-Dialog 'Não foi possível' ("Detalhe: " + $matches[1].Trim()) 'warn') }
         else { [void](Show-Dialog 'Sem resposta' 'Não foi possível confirmar o resultado.' 'warn') }
@@ -3596,9 +2667,10 @@ function Update-ConfigCard {
 }
 
 function Act-AppUpdate {
+    if ($script:Tasks.Count -or $script:BackupBusy -or $script:ElevBusy) { $FooterText.Text='Aguarde as operações antes de atualizar.'; return }
     $u = $script:AppUpd
     if (-not $u) { return }
-    $msg = "Atualizar o HollowDrivers de $AppVersion para $($u.Version)?`n`nO app vai fechar, atualizar e abrir de novo sozinho em alguns segundos. Seu backup e suas configurações são mantidos."
+    $msg = "Atualizar o HollowDrivers de $AppVersion para $($u.Version)?`n`nFeche também o monitor na bandeja antes de continuar. O app vai fechar, atualizar e abrir novamente. Seu backup e suas configurações são mantidos."
     if ($u.Notes) { $msg += "`n`nNovidades:`n" + $u.Notes }
     if (-not (Show-Dialog 'Atualizar HollowDrivers' $msg 'ask' -YesNo -YesText 'Atualizar')) { return }
     $script:AppSetup = Join-Path $env:TEMP "HollowDrivers-Setup-$($u.Version).exe"
@@ -3611,6 +2683,7 @@ function Act-AppUpdate {
             [void](Show-Dialog 'Atualização falhou' "Não foi possível baixar a versão nova. Nada foi alterado.`n`n$err" 'bad')
             return
         }
+        if ($script:Tasks.Count -or $script:BackupBusy -or $script:ElevBusy) { $FooterText.Text='Download pronto. Aguarde as operações e tente atualizar novamente.'; return }
         Start-Process $script:AppSetup -ArgumentList '/silent'
         $app.Shutdown()
     }
@@ -3901,9 +2974,8 @@ Update-WuCard
 Update-WatchButton
 Update-RescueButton
 Update-Sites
-$Win.add_Loaded({
-    Start-AppUpdateCheck $false
-    if ($Rescue) {
+function Show-RescueRequest {
+    if (-not $WdTimer.IsEnabled) {
         $g = Get-GpuInfo
         $b = Get-Baseline
         if ($g -and $g.Code -ne 0 -and $b -and (Get-Backup $b.Version)) {
@@ -3917,7 +2989,36 @@ $Win.add_Loaded({
             $WdTimer.Start()
         }
     }
+}
+$Win.add_Loaded({
+    Start-AppUpdateCheck $false
+    if ($Rescue) { Show-RescueRequest }
 })
 $BtnRestore.IsEnabled = [bool](Get-Backup (Get-Baseline).Version)
 
+$instanceTimer = New-Object Windows.Threading.DispatcherTimer
+$instanceTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+$instanceTimer.add_Tick({
+    if ($activateEvent.WaitOne(0)) {
+        if ($Win.WindowState -eq 'Minimized') { $Win.WindowState = 'Normal' }
+        [void]$Win.Activate()
+    }
+    if ($rescueEvent.WaitOne(0)) { Show-RescueRequest }
+})
+$instanceTimer.Start()
+$Win.add_Closing({ param($sender,$args)
+    if($script:Tasks.Count -or $script:ElevBusy -or $script:BackupBusy){
+        $args.Cancel=$true
+        $FooterText.Text='Aguarde a operação em andamento terminar antes de fechar.'
+    }
+})
 [void]$app.Run($Win)
+} finally {
+    if ($instanceTimer) { $instanceTimer.Stop() }
+    if ($ownsUiMutex) { $uiMutex.ReleaseMutex() }
+    $uiMutex.Dispose()
+    $activateEvent.Dispose()
+    $rescueEvent.Dispose()
+}
+
+} finally { $sessionLease.Dispose() }
