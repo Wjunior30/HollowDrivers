@@ -3,137 +3,199 @@
         Title="HollowDrivers" Width="1120" Height="760" MinWidth="980" MinHeight="640" WindowStartupLocation="CenterScreen"
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
         UseLayoutRounding="True">
-  <Grid>
-    <!-- ======================= INÍCIO ======================= -->
-    <Grid x:Name="HomeView">
-      <Grid.Background>
-        <RadialGradientBrush Center="0.5,0.3" GradientOrigin="0.5,0.3" RadiusX="0.6" RadiusY="0.65">
-          <GradientStop Color="__BGR__" Offset="0"/>
-          <GradientStop Color="#0F1115" Offset="1"/>
-        </RadialGradientBrush>
-      </Grid.Background>
-      <DockPanel>
-        <Border x:Name="HomeRail" DockPanel.Dock="Left" Width="228" Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-          <DockPanel x:Name="HomeRailBox" Margin="14,18,14,14">
-            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-              <Image x:Name="BrandLogo1" Width="32" Height="32" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
-              <TextBlock x:Name="HomeLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-            </StackPanel>
-            <Button x:Name="BtnRailHome" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-            <Button x:Name="BtnHomeScan" DockPanel.Dock="Bottom" Style="{StaticResource NavBtn}" Tag="&#xE721;" Content="Analisar agora"/>
-            <StackPanel>
-              <ToggleButton x:Name="HomeNavHome" Style="{StaticResource Nav}" Tag="&#xE80F;" Content="Início" IsChecked="True"/>
-              <Button x:Name="BtnAdvanced" Style="{StaticResource NavBtn}" Tag="&#xE896;" Content="Drivers"/>
-              <Button x:Name="HomeNavVideo" Style="{StaticResource NavBtn}" Tag="&#xE7F4;" Content="Meus drivers"/>
-              <Button x:Name="HomeNavWin" Style="{StaticResource NavBtn}" Tag="&#xE895;" Content="Windows Update"/>
-              <Button x:Name="HomeNavSystem" Style="{StaticResource NavBtn}" Tag="&#xE946;" Content="Sistema"/>
-              <Button x:Name="HomeNavGuard" Style="{StaticResource NavBtn}" Tag="&#xEA18;" Content="Proteção"/>
-              <Button x:Name="HomeNavClean" Style="{StaticResource NavBtn}" Tag="&#xE74D;" Content="Limpeza"/>
-              <Button x:Name="BtnHomeConfig" Style="{StaticResource NavBtn}" Tag="&#xE713;" Content="Configurações"/>
-            </StackPanel>
-          </DockPanel>
-        </Border>
-        <Grid DockPanel.Dock="Bottom" Margin="28,0,28,16">
-          <TextBlock x:Name="FooterText" Foreground="{StaticResource Dim}" FontSize="12" VerticalAlignment="Center"/>
+  <Window.Resources>
+    <!-- um aviso da tela inicial; os botões levam "act|id" ou "ignore|chave" no Tag -->
+    <DataTemplate x:Key="FindingTpl">
+      <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="16,12" Margin="0,0,0,8"
+              ToolTip="{Binding Desc}" ToolTipService.IsEnabled="{Binding TipOn}" ToolTipService.InitialShowDelay="400" ToolTipService.ShowDuration="30000">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <Border Width="32" Height="32" CornerRadius="16" Background="{Binding Halo}" VerticalAlignment="Top">
+            <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{Binding Color}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <StackPanel Grid.Column="1" Margin="14,0,14,0" VerticalAlignment="Center">
+            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding Desc}" Visibility="{Binding DescShown}" FontSize="12.5" Foreground="{StaticResource Dim}" TextWrapping="Wrap" LineHeight="19" Margin="0,4,0,0"/>
+          </StackPanel>
+          <Button Grid.Column="2" Content="{Binding BtnText}" Tag="{Binding ActTag}" Visibility="{Binding BtnShown}" VerticalAlignment="Center" Margin="0">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource Pill}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding Accent}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource Accent}"/>
+                    <Setter Property="BorderBrush" Value="Transparent"/>
+                    <Setter Property="Foreground" Value="White"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Grid.Column="3" Style="{StaticResource Ghost}" Tag="{Binding IgnoreTag}" Visibility="{Binding IgnoreShown}" ToolTip="Ignorar este aviso"
+                  VerticalAlignment="Center" Margin="6,0,-6,0">
+            <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="11"/>
+          </Button>
         </Grid>
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,30,0,20" Width="720">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-              <Image x:Name="BrandLogo2" Width="32" Height="32" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
-              <TextBlock Text="HollowDrivers" FontSize="30" FontWeight="SemiBold" FontFamily="{StaticResource Display}"/>
-            </StackPanel>
-            <TextBlock Text="Verifica seus drivers e avisa quando algo der errado." Foreground="{StaticResource Dim}" FontSize="14" HorizontalAlignment="Center" Margin="0,6,0,0"/>
-
-            <Button x:Name="BigBtn" Width="220" Height="220" Margin="0,40,0,36" Cursor="Hand" HorizontalAlignment="Center" Focusable="False">
-              <Button.Template>
-                <ControlTemplate TargetType="Button">
-                  <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
-                    <Grid.RenderTransform><ScaleTransform x:Name="Sc" ScaleX="1" ScaleY="1"/></Grid.RenderTransform>
-                    <Ellipse Fill="__HALO__" Margin="-18"/>
-                    <Ellipse Fill="{StaticResource Accent}">
-                      <Ellipse.Effect><DropShadowEffect Color="__GLOW__" BlurRadius="70" ShadowDepth="0" Opacity="0.55"/></Ellipse.Effect>
-                    </Ellipse>
-                    <Ellipse Margin="12" Stroke="#40FFFFFF" StrokeThickness="1.5"/>
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Grid>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True">
-                      <Trigger.EnterActions>
-                        <BeginStoryboard>
-                          <Storyboard>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1.05" Duration="0:0:0.18"/>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1.05" Duration="0:0:0.18"/>
-                          </Storyboard>
-                        </BeginStoryboard>
-                      </Trigger.EnterActions>
-                      <Trigger.ExitActions>
-                        <BeginStoryboard>
-                          <Storyboard>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.18"/>
-                            <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.18"/>
-                          </Storyboard>
-                        </BeginStoryboard>
-                      </Trigger.ExitActions>
-                    </Trigger>
-                    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Button.Template>
-              <Grid Width="220" Height="220">
-                <Ellipse x:Name="Spinner" Margin="5" Stroke="White" StrokeThickness="4" StrokeDashArray="30 200" StrokeDashCap="Round" Opacity="0" RenderTransformOrigin="0.5,0.5">
-                  <Ellipse.RenderTransform><RotateTransform x:Name="SpinRot"/></Ellipse.RenderTransform>
-                </Ellipse>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                  <TextBlock x:Name="BigIcon" FontFamily="{StaticResource Icons}" Text="&#xE721;" FontSize="36" Foreground="White" HorizontalAlignment="Center"/>
-                  <TextBlock x:Name="BigLabel" Text="ANALISAR" FontSize="24" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" Margin="0,8,0,0" FontFamily="{StaticResource Display}"/>
-                </StackPanel>
-              </Grid>
-            </Button>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-              <Border x:Name="VerdictBadge" Width="38" Height="38" CornerRadius="19" Background="#1F232C" Margin="0,0,12,0">
-                <TextBlock x:Name="VerdictIcon" FontFamily="{StaticResource Icons}" Text="&#xE946;" FontSize="17" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              </Border>
-              <TextBlock x:Name="VerdictText" Text="Pronto para verificar" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" FontFamily="{StaticResource Display}"/>
-            </StackPanel>
-            <TextBlock x:Name="VerdictSub" Text="Clique no botão para analisar seu PC" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,8,0,0" FontSize="13"/>
-            <StackPanel x:Name="Findings" Margin="0,26,0,0"/>
-          </StackPanel>
-        </ScrollViewer>
-      </DockPanel>
-    </Grid>
-
-    <!-- ======================= AVANÇADO ======================= -->
-    <Grid x:Name="AdvView" Visibility="Collapsed">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="AdvCol" Width="228"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-
-      <!-- ===== barra lateral ===== -->
-      <Border Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-        <DockPanel x:Name="AdvRailBox" Margin="14,18,14,14">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-            <Image x:Name="BrandLogo3" Width="32" Height="32" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
-            <TextBlock x:Name="AdvLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-          </StackPanel>
-          <Button x:Name="BtnRailAdv" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-          <StackPanel>
-            <Button x:Name="BtnBack" Style="{StaticResource NavBtn}" Tag="&#xE80F;" Content="Início"/>
-            <ToggleButton x:Name="NavDrivers" Style="{StaticResource Nav}" Tag="&#xE896;" Content="Drivers" IsChecked="True"/>
-            <ToggleButton x:Name="NavVideo" Style="{StaticResource Nav}" Tag="&#xE7F4;" Content="Meus drivers"/>
-            <ToggleButton x:Name="NavWin" Style="{StaticResource Nav}" Tag="&#xE895;" Content="Windows Update"/>
-            <ToggleButton x:Name="NavSystem" Style="{StaticResource Nav}" Tag="&#xE946;" Content="Sistema"/>
-            <ToggleButton x:Name="NavGuard" Style="{StaticResource Nav}" Tag="&#xEA18;" Content="Proteção"/>
-            <ToggleButton x:Name="NavClean" Style="{StaticResource Nav}" Tag="&#xE74D;" Content="Limpeza"/>
-            <Button x:Name="BtnAdvConfig" Style="{StaticResource NavBtn}" Tag="&#xE713;" Content="Configurações"/>
-
-          </StackPanel>
-        </DockPanel>
       </Border>
+    </DataTemplate>
+    <!-- bloco de status da tela inicial; o Tag é a página que ele abre -->
+    <DataTemplate x:Key="TileTpl">
+      <Button Tag="{Binding Page}" Cursor="Hand" Margin="5,0" ToolTip="{Binding Tip}">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="14,12">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="BorderBrush" Value="#565E6E"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.8"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+        <StackPanel>
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="13" Foreground="{StaticResource Dim}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Dim}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          </StackPanel>
+          <TextBlock Text="{Binding Value}" Foreground="{Binding Color}" FontSize="15.5" FontWeight="SemiBold" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource Display}"/>
+        </StackPanel>
+      </Button>
+    </DataTemplate>
+  </Window.Resources>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition x:Name="RailCol" Width="228"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
 
+    <!-- ======================= BARRA LATERAL (única para todas as telas) ======================= -->
+    <Border Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
+      <DockPanel x:Name="RailBox" Margin="14,18,14,14">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
+          <Image x:Name="BrandLogo" Width="32" Height="32" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
+          <TextBlock x:Name="LogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
+        </StackPanel>
+        <Button x:Name="BtnRail" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
+        <ToggleButton x:Name="NavSettings" DockPanel.Dock="Bottom" Style="{StaticResource Nav}" Tag="&#xE713;" Content="Configurações"/>
+        <StackPanel>
+          <ToggleButton x:Name="NavHome" Style="{StaticResource Nav}" Tag="&#xE80F;" Content="Início" IsChecked="True"/>
+          <ToggleButton x:Name="NavDrivers" Style="{StaticResource Nav}" Tag="&#xE896;" Content="Drivers"/>
+          <ToggleButton x:Name="NavGuard" Style="{StaticResource Nav}" Tag="&#xEA18;" Content="Proteção"/>
+          <ToggleButton x:Name="NavTools" Style="{StaticResource Nav}" Tag="&#xE90F;" Content="Ferramentas"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Grid Grid.Column="1" Background="{StaticResource Bg}">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <!-- ======================= INÍCIO ======================= -->
+      <Grid x:Name="HomeView" Grid.RowSpan="2">
+        <Grid.Background>
+          <RadialGradientBrush Center="0.5,0.3" GradientOrigin="0.5,0.3" RadiusX="0.6" RadiusY="0.65">
+            <GradientStop Color="__BGR__" Offset="0"/>
+            <GradientStop Color="#0F1115" Offset="1"/>
+          </RadialGradientBrush>
+        </Grid.Background>
+        <DockPanel>
+          <TextBlock x:Name="FooterText" DockPanel.Dock="Bottom" Margin="28,0,28,16" Foreground="{StaticResource Dim}" FontSize="12"/>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel HorizontalAlignment="Center" Margin="0,34,0,20" Width="760">
+              <Button x:Name="BigBtn" Width="200" Height="200" Margin="0,0,0,28" Cursor="Hand" HorizontalAlignment="Center" Focusable="False">
+                <Button.Template>
+                  <ControlTemplate TargetType="Button">
+                    <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                      <Grid.RenderTransform><ScaleTransform x:Name="Sc" ScaleX="1" ScaleY="1"/></Grid.RenderTransform>
+                      <Ellipse Fill="__HALO__" Margin="-18"/>
+                      <Ellipse Fill="{StaticResource Accent}">
+                        <Ellipse.Effect><DropShadowEffect Color="__GLOW__" BlurRadius="70" ShadowDepth="0" Opacity="0.55"/></Ellipse.Effect>
+                      </Ellipse>
+                      <Ellipse Margin="12" Stroke="#40FFFFFF" StrokeThickness="1.5"/>
+                      <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Trigger.EnterActions>
+                          <BeginStoryboard>
+                            <Storyboard>
+                              <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1.05" Duration="0:0:0.18"/>
+                              <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1.05" Duration="0:0:0.18"/>
+                            </Storyboard>
+                          </BeginStoryboard>
+                        </Trigger.EnterActions>
+                        <Trigger.ExitActions>
+                          <BeginStoryboard>
+                            <Storyboard>
+                              <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.18"/>
+                              <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.18"/>
+                            </Storyboard>
+                          </BeginStoryboard>
+                        </Trigger.ExitActions>
+                      </Trigger>
+                      <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </Button.Template>
+                <Grid Width="200" Height="200">
+                  <Ellipse x:Name="Spinner" Margin="5" Stroke="White" StrokeThickness="4" StrokeDashArray="30 200" StrokeDashCap="Round" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                    <Ellipse.RenderTransform><RotateTransform x:Name="SpinRot"/></Ellipse.RenderTransform>
+                  </Ellipse>
+                  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock x:Name="BigIcon" FontFamily="{StaticResource Icons}" Text="&#xE721;" FontSize="34" Foreground="White" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="BigLabel" Text="ANALISAR" FontSize="23" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" Margin="0,8,0,0" FontFamily="{StaticResource Display}"/>
+                  </StackPanel>
+                </Grid>
+              </Button>
+
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <Border x:Name="VerdictBadge" Width="38" Height="38" CornerRadius="19" Background="#1F232C" Margin="0,0,12,0">
+                  <TextBlock x:Name="VerdictIcon" FontFamily="{StaticResource Icons}" Text="&#xE946;" FontSize="17" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock x:Name="VerdictText" Text="Pronto para verificar" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" FontFamily="{StaticResource Display}"/>
+              </StackPanel>
+              <TextBlock x:Name="VerdictSub" Text="Clique no botão para analisar seu PC" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,8,0,0" FontSize="13"/>
+
+              <ItemsControl x:Name="HomeTiles" Margin="-5,28,-5,0" ItemTemplate="{StaticResource TileTpl}" Focusable="False">
+                <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="4"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+              </ItemsControl>
+              <TextBlock x:Name="HomeProgress" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,14,0,0" FontSize="12.5" Visibility="Collapsed"/>
+              <TextBlock x:Name="HomeBusy" Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,6,0,0" FontSize="12.5" Visibility="Collapsed"/>
+
+              <StackPanel x:Name="FixBar" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,22,0,0" Visibility="Collapsed">
+                <Button x:Name="BtnFixAll" Style="{StaticResource PillAccent}" Padding="28,11" FontSize="14" Margin="0" Content="Corrigir tudo"/>
+                <Button x:Name="BtnDetails" Style="{StaticResource Ghost}" Content="Ver detalhes" VerticalAlignment="Center" Margin="14,0,0,0"/>
+              </StackPanel>
+              <ItemsControl x:Name="ProblemsList" Margin="0,22,0,0" ItemTemplate="{StaticResource FindingTpl}" Focusable="False"/>
+              <StackPanel x:Name="DetailsPanel" Margin="0,10,0,0" Visibility="Collapsed">
+                <TextBlock Text="SUGESTÕES" Style="{StaticResource GroupLbl}"/>
+                <ItemsControl x:Name="DetailsList" ItemTemplate="{StaticResource FindingTpl}" Focusable="False"/>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
+      </Grid>
+
+      <!-- ======================= abas de Drivers e Ferramentas ======================= -->
+      <StackPanel x:Name="TabBar" Orientation="Horizontal" Margin="28,18,26,0" Visibility="Collapsed">
+        <ToggleButton x:Name="TabDrivers" Style="{StaticResource Tab}" Tag="drivers" Content="Todos os drivers"/>
+        <ToggleButton x:Name="TabVideo" Style="{StaticResource Tab}" Tag="video" Content="Backups"/>
+        <ToggleButton x:Name="TabWin" Style="{StaticResource Tab}" Tag="windows" Content="Windows Update"/>
+        <ToggleButton x:Name="TabSystem" Style="{StaticResource Tab}" Tag="sistema" Content="Sistema"/>
+        <ToggleButton x:Name="TabClean" Style="{StaticResource Tab}" Tag="limpeza" Content="Limpeza"/>
+        <ToggleButton x:Name="TabExtras" Style="{StaticResource Tab}" Tag="extras" Content="Jogos e clone"/>
+      </StackPanel>
+
+      <Grid x:Name="Sections" Grid.Row="1">
       <!-- ===== seção: Drivers ===== -->
-      <Grid x:Name="PanDrivers" Grid.Column="1" Margin="26,20,26,14">
+      <Grid x:Name="PanDrivers" Margin="26,14,26,14" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
@@ -201,14 +263,14 @@
       </Grid>
 
       <!-- ===== seção: Meus drivers ===== -->
-       <Grid x:Name="PanVideo" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
+       <Grid x:Name="PanVideo" Margin="26,14,26,14" Visibility="Collapsed">
          <Grid.RowDefinitions>
            <RowDefinition Height="Auto"/>
            <RowDefinition Height="Auto"/>
            <RowDefinition Height="*"/>
          </Grid.RowDefinitions>
          <StackPanel>
-           <TextBlock Text="Meus drivers" Style="{StaticResource SectionTitle}"/>
+           <TextBlock Text="Backups dos drivers" Style="{StaticResource SectionTitle}"/>
            <TextBlock Text="Cada driver tem sua própria cópia. Veja o que já está protegido e faça backup dos que faltam." Style="{StaticResource SectionSub}"/>
          </StackPanel>
          <Border Grid.Row="1" Margin="0,18,0,0" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="20,16">
@@ -274,7 +336,7 @@
          </ScrollViewer>
        </Grid>
        <!-- ===== seção: Sistema ===== -->
-      <Grid x:Name="PanSystem" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
+      <Grid x:Name="PanSystem" Margin="26,14,26,14" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
@@ -318,7 +380,7 @@
        </Grid>
 
       <!-- ===== seção: Limpeza ===== -->
-      <Grid x:Name="PanClean" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
+      <Grid x:Name="PanClean" Margin="26,14,26,14" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
@@ -357,7 +419,7 @@
         </StackPanel>
       </Grid>
       <!-- ===== seção: Windows Update ===== -->
-      <Grid x:Name="PanWin" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
+      <Grid x:Name="PanWin" Margin="26,14,26,14" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
@@ -396,7 +458,7 @@
       </Grid>
 
       <!-- ===== seção: Proteção ===== -->
-      <Grid x:Name="PanGuard" Grid.Column="1" Margin="26,20,26,14" Visibility="Collapsed">
+      <Grid x:Name="PanGuard" Margin="26,14,26,14" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
@@ -414,70 +476,81 @@
           <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
           <Button x:Name="BtnWatch" Style="{StaticResource PillAccent}" Content="Vigia automático"/>
           <Button x:Name="BtnRescue" Content="Socorro automático"/>
-          <Button x:Name="BtnGames" Content="Componentes para jogos"/><Button x:Name="BtnClone" Content="Preparar clone do Windows"/><Button x:Name="BtnHistory" Content="Histórico"/><Button x:Name="BtnDiagnostics" Content="Exportar diagnóstico"/>
+          <Button x:Name="BtnHistory" Content="Histórico"/><Button x:Name="BtnDiagnostics" Content="Exportar diagnóstico"/>
           <Button x:Name="BtnDb" Style="{StaticResource PillBad}" Content="Remover Driver Booster" Visibility="Collapsed"/>
         </WrapPanel>
       </Grid>
-    </Grid>
 
-    <!-- ======================= CONFIGURAÇÕES ======================= -->
-    <Grid x:Name="ConfigView" Background="{StaticResource Bg}" Visibility="Collapsed">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="ConfigCol" Width="228"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
-      </Grid.RowDefinitions>
-      <Border Grid.RowSpan="2" Background="#12151B" BorderBrush="{StaticResource Stroke}" BorderThickness="0,0,1,0">
-        <DockPanel x:Name="ConfigRailBox" Margin="14,18,14,14">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,24">
-            <Image x:Name="BrandLogo4" Width="32" Height="32" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,9,0"/>
-            <TextBlock x:Name="ConfigLogoText" Text="HollowDrivers" FontSize="16" FontWeight="SemiBold" FontFamily="{StaticResource Display}" VerticalAlignment="Center"/>
-          </StackPanel>
-          <Button x:Name="BtnRailConfig" DockPanel.Dock="Top" Style="{StaticResource NavBtn}" Tag="&#xE700;" Content="Recolher menu" Margin="0,0,0,6" HorizontalAlignment="Left"/>
-          <StackPanel>
-            <Button x:Name="BtnConfigHome" Style="{StaticResource NavBtn}" Tag="&#xE80F;" Content="Início"/>
-            <Button x:Name="ConfigNavDrivers" Style="{StaticResource NavBtn}" Tag="&#xE896;" Content="Drivers"/>
-            <Button x:Name="ConfigNavVideo" Style="{StaticResource NavBtn}" Tag="&#xE7F4;" Content="Meus drivers"/>
-            <Button x:Name="ConfigNavWin" Style="{StaticResource NavBtn}" Tag="&#xE895;" Content="Windows Update"/>
-            <Button x:Name="ConfigNavSystem" Style="{StaticResource NavBtn}" Tag="&#xE946;" Content="Sistema"/>
-            <Button x:Name="ConfigNavGuard" Style="{StaticResource NavBtn}" Tag="&#xEA18;" Content="Proteção"/>
-            <Button x:Name="ConfigNavClean" Style="{StaticResource NavBtn}" Tag="&#xE74D;" Content="Limpeza"/>
-            <ToggleButton x:Name="ConfigNavSettings" Style="{StaticResource Nav}" Tag="&#xE713;" Content="Configurações" IsChecked="True"/>
-          </StackPanel>
-        </DockPanel>
-      </Border>
-      <Grid Grid.Column="1" Margin="30,22,30,0">
+      <!-- ===== seção: Jogos e clone ===== -->
+      <Grid x:Name="PanExtras" Margin="26,14,26,14" Visibility="Collapsed">
         <StackPanel>
-          <TextBlock Text="Configurações" Style="{StaticResource SectionTitle}"/>
-          <TextBlock Text="Aparência do app e atualizações do próprio HollowDrivers." Style="{StaticResource SectionSub}"/>
+          <TextBlock Text="Jogos e clone" Style="{StaticResource SectionTitle}"/>
+          <TextBlock Text="Componentes que jogos pedem e a cópia completa do Windows para outro disco." Style="{StaticResource SectionSub}"/>
+          <WrapPanel Margin="0,18,0,0">
+            <Border Width="340" Margin="0,0,16,16" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
+              <StackPanel>
+                <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE7FC;" FontSize="22" Foreground="__ICON__"/>
+                <TextBlock Text="Componentes para jogos" FontSize="17" FontWeight="SemiBold" FontFamily="{StaticResource Display}" Margin="0,10,0,4"/>
+                <TextBlock Text="Visual C++ e DirectX legado, baixados da Microsoft e conferidos pela assinatura." TextWrapping="Wrap" Foreground="{StaticResource Dim}" FontSize="12.5" Height="38"/>
+                <Button x:Name="BtnGames" Style="{StaticResource PillAccent}" Content="Abrir" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Width="340" Margin="0,0,16,16" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
+              <StackPanel>
+                <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEDA2;" FontSize="22" Foreground="__ICON__"/>
+                <TextBlock Text="Clone do Windows" FontSize="17" FontWeight="SemiBold" FontFamily="{StaticResource Display}" Margin="0,10,0,4"/>
+                <TextBlock Text="Roteiro passo a passo para copiar o Windows para outro disco com o Rescuezilla." TextWrapping="Wrap" Foreground="{StaticResource Dim}" FontSize="12.5" Height="38"/>
+                <Button x:Name="BtnClone" Style="{StaticResource PillAccent}" Content="Preparar clone" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              </StackPanel>
+            </Border>
+          </WrapPanel>
         </StackPanel>
-        <Button x:Name="BtnConfigClose" Style="{StaticResource NavBtn}" Tag="&#xE711;" Content="Fechar" HorizontalAlignment="Right" VerticalAlignment="Top"/>
       </Grid>
-      <ScrollViewer Grid.Column="1" Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="30,18,30,22">
-        <StackPanel MaxWidth="760" HorizontalAlignment="Left">
-        <Border Margin="0,18,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="TEMA DE CORES" Style="{StaticResource GroupLbl}"/>
-            <TextBlock Text="A cor de destaque do app. Ao trocar, o HollowDrivers reabre em um segundo." Foreground="{StaticResource Dim}" FontSize="12.5" Margin="0,0,0,14"/>
-            <WrapPanel x:Name="ConfigThemes"/>
-          </StackPanel>
-        </Border>
-        <Border Margin="0,16,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
-          <StackPanel>
-            <TextBlock Text="ATUALIZAÇÕES DO HollowDrivers" Style="{StaticResource GroupLbl}"/>
-            <TextBlock x:Name="ConfigUpd" TextWrapping="Wrap" LineHeight="22"/>
-            <WrapPanel Margin="0,14,0,0">
-              <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
-              <Button x:Name="BtnAppCheck" Content="Procurar atualização"/>
-              <Button x:Name="BtnAppInstall" Style="{StaticResource PillAccent}" Content="Instalar atualização" Visibility="Collapsed"/>
-            </WrapPanel>
-          </StackPanel>
-        </Border>
+      </Grid>
+
+      <!-- ======================= CONFIGURAÇÕES ======================= -->
+      <Grid x:Name="ConfigView" Grid.RowSpan="2" Background="{StaticResource Bg}" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel Margin="30,22,30,0">
+          <TextBlock Text="Configurações" Style="{StaticResource SectionTitle}"/>
+          <TextBlock Text="Aparência, tela inicial e atualizações do próprio HollowDrivers." Style="{StaticResource SectionSub}"/>
         </StackPanel>
-      </ScrollViewer>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="30,18,30,22">
+          <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+          <Border Margin="0,0,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
+            <StackPanel>
+              <TextBlock Text="TEMA DE CORES" Style="{StaticResource GroupLbl}"/>
+              <TextBlock Text="A cor de destaque do app. Ao trocar, o HollowDrivers reabre em um segundo." Foreground="{StaticResource Dim}" FontSize="12.5" Margin="0,0,0,14"/>
+              <WrapPanel x:Name="ConfigThemes"/>
+            </StackPanel>
+          </Border>
+          <Border Margin="0,16,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
+            <StackPanel>
+              <TextBlock Text="TELA INICIAL" Style="{StaticResource GroupLbl}"/>
+              <CheckBox x:Name="ChkAutoScan" Content="Analisar o PC ao abrir o HollowDrivers" Foreground="{StaticResource Text}" Margin="0,2,0,0"/>
+              <TextBlock x:Name="ConfigIgnored" Foreground="{StaticResource Dim}" FontSize="12.5" Margin="0,14,0,0" TextWrapping="Wrap"/>
+              <WrapPanel Margin="0,12,0,0">
+                <Button x:Name="BtnUnignore" Style="{StaticResource Pill}" Content="Mostrar avisos ignorados"/>
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+          <Border Margin="0,16,0,0" MaxWidth="760" Background="{StaticResource Surface}" BorderBrush="{StaticResource Stroke}" BorderThickness="1" CornerRadius="14" Padding="22,18">
+            <StackPanel>
+              <TextBlock Text="ATUALIZAÇÕES DO HollowDrivers" Style="{StaticResource GroupLbl}"/>
+              <TextBlock x:Name="ConfigUpd" TextWrapping="Wrap" LineHeight="22"/>
+              <WrapPanel Margin="0,14,0,0">
+                <WrapPanel.Resources><Style TargetType="Button" BasedOn="{StaticResource Pill}"/></WrapPanel.Resources>
+                <Button x:Name="BtnAppCheck" Content="Procurar atualização"/>
+                <Button x:Name="BtnAppInstall" Style="{StaticResource PillAccent}" Content="Instalar atualização" Visibility="Collapsed"/>
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
     </Grid>
   </Grid>
 </Window>

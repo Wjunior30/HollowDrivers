@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $assembly=[Reflection.Assembly]::Load([IO.File]::ReadAllBytes((Join-Path $root 'dist\HollowDrivers-Setup.exe')))
-foreach($name in 'HollowDrivers.ps1','CloneAssistant.ps1','SimpleClone.ps1','DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1','clone-offline.sh'){
+foreach($name in 'HollowDrivers.ps1','CloneAssistant.ps1','SimpleClone.ps1','DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1','Home.ps1','Updates.ps1','Cleanup.ps1','clone-offline.sh'){
  $stream=$assembly.GetManifestResourceStream($name)
  if(-not $stream){throw "Missing resource: $name"}
  $memory=New-Object IO.MemoryStream
