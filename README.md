@@ -63,3 +63,15 @@ Falhas e resultados entram no histórico existente. O retorno de reinício neces
 Fontes oficiais: [Visual C++](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist), [DirectX legado](https://www.microsoft.com/en-us/download/details.aspx?id=8109).
 
 Teste: `tests/game-components.ps1`, com Windows PowerShell em STA. Verifica catálogo, detecção, rejeição de assinaturas não confiáveis, decisões conforme versão, códigos de saída, tamanho do comando administrativo e navegação da janela. Não instala componentes no sistema.
+
+## Tela inicial e navegação (próxima versão)
+
+- A tela inicial mostra o veredito, quatro blocos de status (Drivers, Vídeo, Proteção e Sistema), um botão principal e no máximo três problemas. Cada bloco abre a seção correspondente.
+- **Corrigir tudo** reúne só o que é seguro fazer em sequência, depois de uma única confirmação: backup do driver de vídeo, ligar a proteção automática e abrir a lista de atualizações oficiais para escolher. Restaurar driver, reiniciar e remover programas continuam com o próprio botão. Sem correção segura, o botão principal resolve o primeiro problema grave.
+- Sugestões e explicações ficam em **Ver detalhes**. Uma sugestão pode ser ignorada no ✕ e volta em Configurações → Tela inicial, ou sozinha quando a situação muda (por exemplo, novas atualizações).
+- O app analisa o PC ao abrir (desligável em Configurações) e mostra a etapa da análise. O resultado anterior aparece enquanto a nova análise roda.
+- Menu lateral único: Início, Drivers (abas Todos os drivers, Backups e Windows Update), Proteção, Ferramentas (abas Sistema, Limpeza e Jogos e clone) e Configurações.
+- Configurações, referências e estado são gravados em arquivo temporário e trocados de uma vez, para não corromper em caso de queda de energia.
+- Código: tela inicial e navegação em `Home.ps1`, atualizações em `Updates.ps1` e limpeza em `Cleanup.ps1`.
+
+Teste: `tests/home.ps1`, com Windows PowerShell em STA. Usa um PC simulado e verifica resumo, blocos, Corrigir tudo, avisos ignorados, detalhes, última análise, navegação e gravação das configurações.

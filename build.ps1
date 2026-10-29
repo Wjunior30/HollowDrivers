@@ -40,7 +40,7 @@ $bw.Close()
 $app = Join-Path $root 'HollowDrivers.ps1'   # PowerShell 5.1 precisa de BOM para ler acentos
 [IO.File]::WriteAllText($app, [IO.File]::ReadAllText($app, [Text.Encoding]::UTF8), (New-Object Text.UTF8Encoding $true))
 
-foreach ($module in 'DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1','CloneAssistant.ps1','SimpleClone.ps1') {
+foreach ($module in 'DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1','Home.ps1','Updates.ps1','Cleanup.ps1','CloneAssistant.ps1','SimpleClone.ps1') {
     $modulePath=Join-Path $root $module
     [IO.File]::WriteAllText($modulePath,[IO.File]::ReadAllText($modulePath,[Text.Encoding]::UTF8),(New-Object Text.UTF8Encoding $true))
 }
@@ -64,7 +64,7 @@ Copy-Item $logo "$dist\HollowDrivers-logo.png" -Force
 Copy-Item "$root\CloneAssistant.ps1", "$root\SimpleClone.ps1", "$root\clone-offline.sh" $dist -Force
 Copy-Item "$dist\HollowDrivers.exe" $root -Force   # para a pasta de desenvolvimento também abrir sem console
 
-$moduleResources = foreach ($module in 'DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1') {
+$moduleResources = foreach ($module in 'DriverLogic.ps1','Views.ps1','Operations.ps1','History.ps1','GameComponents.ps1','Home.ps1','Updates.ps1','Cleanup.ps1') {
     Copy-Item (Join-Path $root $module) $dist -Force
     "/resource:$(Join-Path $root $module),$module"
 }
